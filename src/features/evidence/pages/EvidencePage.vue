@@ -1,17 +1,18 @@
 <script setup lang="ts">
-import { ref, computed, watch } from "vue";
+import { ref, computed, watch, onMounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { ElButton, ElInput, ElTable, ElTableColumn, ElMessage, ElProgress, ElAlert, ElSelect, ElOption } from "element-plus";
+import { ElButton, ElInput, ElTable, ElTableColumn, ElMessage, ElProgress, ElAlert, ElSelect, ElOption, ElLoading } from "element-plus";
 import { Cpu, Document, Connection, Upload, Money, Van } from "@element-plus/icons-vue";
 import { useEvidenceStore } from "@/shared/stores/evidenceStore";
-import { mockCaseList } from "@/mocks/cases";
+import { repositories } from "@/services";
 
 const route = useRoute();
 const router = useRouter();
 const store = useEvidenceStore();
 
-const evidenceTab = ref<"chat" | "transfer" | "logistics">("chat");
+const evidenceTab = ref<"chat" | "transfer" | "logistics">('chat');
 const selectedCaseId = ref("");
+const evidenceType = ref('communication');
 
 // 监听路由变化，自动切换 tab
 watch(
@@ -19,20 +20,41 @@ watch(
   (newPath) => {
     if (newPath.includes("/evidence/chat")) {
       evidenceTab.value = "chat";
+      evidenceType.value = 'communication';
     } else if (newPath.includes("/evidence/transfer")) {
       evidenceTab.value = "transfer";
+      evidenceType.value = 'transaction';
     } else if (newPath.includes("/evidence/logistics")) {
       evidenceTab.value = "logistics";
+      evidenceType.value = 'logistics';
     }
   },
   { immediate: true }
 );
 
-const caseOptions = computed(() => {
-  return mockCaseList.data?.list.map(c => ({
-    value: c.id,
-    label: `${c.id} - ${c.suspect}`
-  })) ?? [];
+const caseOptions = ref<any[]>([]);
+
+// 加载案件列表
+async function loadCases() {
+  try {
+    const response = await repositories.cases.listCases({
+      limit: 100,
+      offset: 0,
+    });
+    if (response.code === 0) {
+      caseOptions.value = response.data!.list.map(c => ({
+        value: c.id,
+        label: `${c.id} - ${c.suspect_name}`
+      }));
+    }
+  } catch (error) {
+    console.error('加载案件列表失败:', error);
+  }
+}
+
+// 组件挂载时加载案件列表
+onMounted(() => {
+  loadCases();
 });
 
 const sampleChat = `刘某某: 老曹，刚到一批轮毂。
@@ -55,17 +77,18 @@ function clearChatInput() {
   store.resetUpload();
 }
 
-const isAnalyzing = computed(() => store.status === "scanning");
-const analysisDone = computed(() => store.status === "success");
-const result = computed(() => store.result);
+const isAnalyzing = ref(false);
+const analysisDone = ref(false);
+const analysisResult = ref<any>(null);
+const analysisError = ref<string | null>(null);
 
-const isTransferAnalyzing = computed(() => store.transfer.status === "analyzing");
-const transferAnalysisDone = computed(() => store.transfer.status === "done");
-const transferResult = computed(() => store.transfer.result);
+const isTransferAnalyzing = ref(false);
+const transferAnalysisDone = ref(false);
+const transferResult = ref<any>(null);
 
-const isLogisticsAnalyzing = computed(() => store.logistics.status === "analyzing");
-const logisticsAnalysisDone = computed(() => store.logistics.status === "done");
-const logisticsResult = computed(() => store.logistics.result);
+const isLogisticsAnalyzing = ref(false);
+const logisticsAnalysisDone = ref(false);
+const logisticsResult = ref<any>(null);
 
 const isUploading = computed(() => store.upload.status === "uploading");
 const uploadDone = computed(() => store.upload.status === "success");
@@ -74,12 +97,47 @@ const uploadProgress = computed(() => store.upload.progress);
 const uploadedFileName = computed(() => store.upload.fileName);
 const uploadedRawText = computed(() => store.upload.rawText);
 
+// 智能分析接口调用
 async function startAnalysis() {
   if (!store.rawText.trim()) {
     ElMessage.warning("请先粘贴聊天记录或上传 CSV 文件");
     return;
   }
-  await store.analyze();
+  
+  isAnalyzing.value = true;
+  analysisError.value = null;
+  
+  const loading = ElLoading.service({ fullscreen: true, text: '正在分析证据...' });
+  
+  try {
+    const response = await fetch('http://localhost:8000/api/analyze/evidence', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        evidence_text: store.rawText,
+        evidence_type: evidenceType.value
+      }),
+    });
+    
+    if (!response.ok) {
+      throw new Error('分析失败');
+    }
+    
+    const data = await response.json();
+    analysisResult.value = data;
+    analysisDone.value = true;
+    
+    ElMessage.success('分析完成');
+  } catch (error) {
+    analysisError.value = '分析失败，请稍后重试';
+    console.error('分析失败:', error);
+    ElMessage.error('分析失败，请稍后重试');
+  } finally {
+    isAnalyzing.value = false;
+    loading.close();
+  }
 }
 
 function scrollToEvidence(evidenceId: string) {
@@ -114,7 +172,52 @@ async function startTransferAnalysis() {
     ElMessage.warning("请先粘贴转账记录或上传 CSV 文件");
     return;
   }
-  await store.analyzeTransfer(transferInput.value);
+  
+  isTransferAnalyzing.value = true;
+  
+  try {
+    // 解析输入的转账记录
+    const records = transferInput.value.trim().split('\n').map(line => {
+      const parts = line.split('|').map(part => part.trim());
+      if (parts.length >= 4) {
+        return {
+          payer: parts[0],
+          payee: parts[1],
+          amount: parseFloat(parts[2]) || 0,
+          time: parts[3],
+          channel: parts[4] || '',
+          caseId: selectedCaseId.value
+        };
+      }
+      return null;
+    }).filter((record): record is any => record !== null);
+    
+    if (records.length === 0) {
+      ElMessage.warning("请输入有效的转账记录");
+      return;
+    }
+    
+    const response = await repositories.evidence.analyzeTransfer({ records });
+    
+    if (response.code === 0) {
+      // 标准格式的情况
+      transferResult.value = response.data;
+      transferAnalysisDone.value = true;
+    } else if (response) {
+      // 直接返回数据的情况
+      transferResult.value = response;
+      transferAnalysisDone.value = true;
+    } else {
+      throw new Error('分析失败');
+    }
+    
+    ElMessage.success('分析完成');
+  } catch (error) {
+    ElMessage.error('分析失败，请稍后重试');
+    console.error('分析失败:', error);
+  } finally {
+    isTransferAnalyzing.value = false;
+  }
 }
 
 const sampleTransfer = `曹某某 | 刘某某 | 20200 | 2024-03-10 14:32 | 银行转账
@@ -139,7 +242,52 @@ async function startLogisticsAnalysis() {
     ElMessage.warning("请先粘贴物流记录或上传 CSV 文件");
     return;
   }
-  await store.analyzeLogistics(logisticsInput.value);
+  
+  isLogisticsAnalyzing.value = true;
+  
+  try {
+    // 解析输入的物流记录
+    const records = logisticsInput.value.trim().split('\n').map(line => {
+      const parts = line.split('|').map(part => part.trim());
+      if (parts.length >= 4) {
+        return {
+          expressNo: parts[0],
+          sender: parts[1],
+          receiver: parts[2],
+          time: parts[3],
+          channel: parts[4] || '',
+          caseId: selectedCaseId.value
+        };
+      }
+      return null;
+    }).filter((record): record is any => record !== null);
+    
+    if (records.length === 0) {
+      ElMessage.warning("请输入有效的物流记录");
+      return;
+    }
+    
+    const response = await repositories.evidence.analyzeLogistics({ records });
+    
+    if (response.code === 0) {
+      // 标准格式的情况
+      logisticsResult.value = response.data;
+      logisticsAnalysisDone.value = true;
+    } else if (response) {
+      // 直接返回数据的情况
+      logisticsResult.value = response;
+      logisticsAnalysisDone.value = true;
+    } else {
+      throw new Error('分析失败');
+    }
+    
+    ElMessage.success('分析完成');
+  } catch (error) {
+    ElMessage.error('分析失败，请稍后重试');
+    console.error('分析失败:', error);
+  } finally {
+    isLogisticsAnalyzing.value = false;
+  }
 }
 
 const sampleLogistics = `SF1234567890 | 刘某某 | 曹某某 | 2024-03-10 14:32 | 顺丰速运
@@ -148,22 +296,62 @@ ZTO2345678901 | 刘某某 | 曹某某 | 2024-03-14 16:20 | 中通速递`;
 
 async function handleFileUpload(file: File, evidenceType: "chat" | "transfer" | "logistics") {
   store.resetUpload();
-  await store.uploadFile(file, evidenceType);
-
-  if (store.upload.status === "success" && store.upload.rawText) {
+  
+  const formData = new FormData();
+  formData.append('file', file);
+  if (selectedCaseId.value) {
+    formData.append('case_id', selectedCaseId.value);
+  }
+  
+  try {
+    let uploadUrl = '';
     if (evidenceType === "chat") {
-      store.rawText = store.upload.rawText;
-      store.reset();
+      uploadUrl = '/upload/communications';
     } else if (evidenceType === "transfer") {
-      transferInput.value = store.upload.rawText;
-      store.resetTransfer();
+      uploadUrl = '/upload/transactions';
     } else {
-      logisticsInput.value = store.upload.rawText;
-      store.resetLogistics();
+      uploadUrl = '/upload/logistics';
     }
-    ElMessage.success(`文件「${file.name}」上传成功，已识别 ${store.upload.rawText.split("\n").length} 行数据`);
-  } else if (store.upload.status === "error") {
-    ElMessage.error(store.upload.error || "文件上传失败");
+    
+    store.upload.status = 'uploading';
+    store.upload.progress = 0;
+    
+    const response = await repositories.evidence.uploadFile(uploadUrl, formData, {
+      onUploadProgress: (progressEvent) => {
+        if (progressEvent.total) {
+          store.upload.progress = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+        }
+      }
+    });
+    
+    store.upload.status = 'success';
+    store.upload.fileName = file.name;
+    
+    // 这里可以根据后端返回的数据进行处理
+    // 假设后端返回了文件内容或处理结果
+    if (response.code === 0) {
+      // 标准格式的情况
+      if (evidenceType === "chat") {
+        // 通讯记录上传成功
+        ElMessage.success(`通讯记录「${file.name}」上传成功`);
+      } else if (evidenceType === "transfer") {
+        // 资金流水上传成功
+        ElMessage.success(`资金流水「${file.name}」上传成功`);
+      } else {
+        // 物流记录上传成功
+        ElMessage.success(`物流记录「${file.name}」上传成功`);
+      }
+    } else if (response) {
+      // 直接返回数据的情况
+      ElMessage.success(`文件「${file.name}」上传成功`);
+    } else {
+      throw new Error('上传失败');
+    }
+  } catch (error) {
+    store.upload.status = 'error';
+    store.upload.error = '文件上传失败';
+    ElMessage.error('文件上传失败，请稍后重试');
+    console.error('文件上传失败:', error);
   }
 
   return false;
@@ -180,6 +368,36 @@ async function handleLogisticsUpload(file: File) {
 function syncToLedger() {
   ElMessage.success("已同步至数据台账");
   router.push("/ledger");
+}
+
+// 生成分析报告
+async function generateReport() {
+  const loading = ElLoading.service({ fullscreen: true, text: '正在生成报告...' });
+  
+  try {
+    const response = await fetch('http://localhost:8000/api/report/generate', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        case_id: selectedCaseId.value || 1
+      }),
+    });
+    
+    if (!response.ok) {
+      throw new Error('报告生成失败');
+    }
+    
+    const data = await response.json();
+    ElMessage.success('报告生成成功');
+    console.log('报告生成结果:', data);
+  } catch (error) {
+    ElMessage.error('报告生成失败，请稍后重试');
+    console.error('报告生成失败:', error);
+  } finally {
+    loading.close();
+  }
 }
 </script>
 
@@ -263,8 +481,8 @@ function syncToLedger() {
               </div>
             </div>
 
-            <div v-if="store.status === 'error'" class="mt-2">
-              <el-alert type="error" :title="store.error ?? undefined" :closable="false" show-icon />
+            <div v-if="analysisError" class="mt-2">
+              <el-alert type="error" :title="analysisError" :closable="false" show-icon />
             </div>
 
             <el-button
@@ -281,11 +499,11 @@ function syncToLedger() {
               <el-button
                 type="primary"
                 :icon="Document"
-                :disabled="analysisDone"
                 class="flex-1 h-10 font-semibold"
                 style="background: #1A3A5C; border-color: #1A3A5C"
+                @click="generateReport"
               >
-                同步至证据清单
+                生成初步分析报告
               </el-button>
               <el-button
                 :icon="Connection"
@@ -316,94 +534,116 @@ function syncToLedger() {
               style="border: 1px solid #F5C6C2; background: #FDECEA"
             >
               <div class="font-semibold" style="color: #C0392B">
-                🔴 检测到 {{ result?.evidenceCount ?? 0 }} 项高度疑似侵权法律特征
+                🔴 检测到疑似侵权法律特征
               </div>
             </div>
 
-            <div
-              v-for="conclusion in result?.conclusions ?? []"
-              :key="conclusion.id"
-              class="app-card p-5"
-            >
-              <template v-if="conclusion.type === 'price_anomaly'">
-                <div class="flex items-center gap-2 mb-3">
-                  <span class="text-lg">🔴</span>
-                  <h4 class="font-bold text-sm" style="color: #1A3A5C">
-                    价格异常判定（低于正品参考价 {{ conclusion.evidence.discountPercent }}%）
-                  </h4>
-                </div>
-                <div class="p-3 rounded-lg text-sm" style="background: #FDECEA; border: 1px solid #F5C6C2">
-                  <p>
-                    {{ conclusion.evidence.product }}报价
-                    <span class="price-highlight">{{ conclusion.evidence.quotedPrice }}元</span>
-                    / 官方参考价：<b>{{ conclusion.evidence.referencePrice }}元</b>
-                  </p>
-                  <p class="mt-1" style="color: #888">
-                    结论：符合典型非法牟利特征，低于正品价格 {{ conclusion.evidence.discountPercent }}%
-                  </p>
-                </div>
-                <div class="mt-3 flex gap-2 flex-wrap">
-                  <el-button
-                    v-for="eid in conclusion.evidence.evidenceIds"
-                    :key="eid"
-                    size="small"
-                    @click="scrollToEvidence(eid)"
-                  >
-                    命中：{{ conclusion.evidence.quotedPrice }}元
-                  </el-button>
-                </div>
-              </template>
-
-              <template v-else-if="conclusion.type === 'subjective_knowledge'">
-                <div class="flex items-center gap-2 mb-3">
-                  <span class="text-lg">🔴</span>
-                  <h4 class="font-bold text-sm" style="color: #1A3A5C">
-                    主观明知证据（回避性关键词）
-                  </h4>
-                </div>
-                <div class="p-3 rounded-lg text-sm" style="background: #F5F8FA; border: 1px solid #D0D5DD">
-                  <p class="italic" style="color: #555">
-                    "{{ conclusion.evidence.rawQuote }}"
-                  </p>
-                  <p class="mt-1" style="color: #888">
-                    命中关键词：{{ conclusion.evidence.keywords.join(" / ") }}
-                  </p>
-                </div>
-                <div class="mt-3 flex gap-2 flex-wrap">
-                  <el-button
-                    v-for="pos in conclusion.evidence.keywordPositions"
-                    :key="pos.evidenceId"
-                    size="small"
-                    @click="scrollToEvidence(pos.evidenceId)"
-                  >
-                    命中：{{ pos.word }}
-                  </el-button>
-                </div>
-              </template>
-
-              <template v-else-if="conclusion.type === 'key_entity'">
-                <div class="flex items-center gap-2 mb-3">
-                  <span class="text-lg">🟡</span>
-                  <h4 class="font-bold text-sm" style="color: #1A3A5C">关键主体提取</h4>
-                </div>
-                <div class="space-y-2">
-                  <div
-                    v-for="entity in conclusion.evidence.entities"
-                    :key="entity.name"
-                    class="flex items-center gap-3 p-2 rounded"
-                    style="background: #EEF3F8"
-                  >
-                    <span class="font-bold text-sm" style="color: #1A3A5C">{{ entity.name }}</span>
-                    <span class="tag-info">{{ entity.role }}</span>
-                    <span v-if="entity.phone" class="text-xs" style="color: #888">手机：{{ entity.phone }}</span>
-                    <span v-if="entity.bankAccount" class="text-xs" style="color: #888">{{ entity.bankAccount }}</span>
-                  </div>
-                </div>
-              </template>
+            <!-- 价格异常判定 -->
+            <div v-if="analysisResult?.price_analysis" class="app-card p-5">
+              <div class="flex items-center gap-2 mb-3">
+                <span class="text-lg">🔴</span>
+                <h4 class="font-bold text-sm" style="color: #1A3A5C">
+                  价格异常判定
+                </h4>
+              </div>
+              <div class="p-3 rounded-lg text-sm" style="background: #FDECEA; border: 1px solid #F5C6C2">
+                <p v-if="analysisResult.price_analysis.is_anomaly">
+                  价格异常：低于正品 {{ Math.round((1 - analysisResult.price_analysis.price_ratio) * 100) }}%
+                </p>
+                <p v-else>
+                  价格正常
+                </p>
+                <p class="mt-1" style="color: #888">
+                  {{ analysisResult.price_analysis.suggestion }}
+                </p>
+              </div>
             </div>
 
-            <div v-if="store.status === 'error'" class="app-card p-4">
-              <el-alert type="error" :title="store.error ?? undefined" :closable="false" show-icon />
+            <!-- 主观明知证据 -->
+            <div v-if="analysisResult?.subjective_knowledge" class="app-card p-5">
+              <div class="flex items-center gap-2 mb-3">
+                <span class="text-lg">🔴</span>
+                <h4 class="font-bold text-sm" style="color: #1A3A5C">
+                  主观明知证据
+                </h4>
+              </div>
+              <div class="p-3 rounded-lg text-sm" style="background: #F5F8FA; border: 1px solid #D0D5DD">
+                <p class="font-semibold mb-2">评分：{{ analysisResult.subjective_knowledge.score }}/10（{{ analysisResult.subjective_knowledge.level }}）</p>
+                <p class="mb-2">命中关键词：{{ analysisResult.subjective_knowledge.hit_keywords.join(' / ') }}</p>
+                <div v-if="analysisResult.subjective_knowledge.quotes && analysisResult.subjective_knowledge.quotes.length > 0" class="mt-2">
+                  <p class="text-xs font-semibold mb-1">原文引用：</p>
+                  <div class="space-y-2">
+                    <div v-for="(quote, index) in analysisResult.subjective_knowledge.quotes" :key="index" class="p-2 rounded bg-white border border-gray-200 text-xs">
+                      {{ quote }}
+                    </div>
+                  </div>
+                </div>
+                <div v-if="analysisResult.subjective_knowledge.category_counts" class="mt-2">
+                  <p class="text-xs font-semibold mb-1">关键词分类：</p>
+                  <div class="flex flex-wrap gap-2">
+                    <span v-for="(count, category) in analysisResult.subjective_knowledge.category_counts" :key="category" class="px-2 py-1 rounded text-xs bg-gray-100">
+                      {{ category }}: {{ count }}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 关键主体提取 -->
+            <div v-if="analysisResult?.key_entities" class="app-card p-5">
+              <div class="flex items-center gap-2 mb-3">
+                <span class="text-lg">🟡</span>
+                <h4 class="font-bold text-sm" style="color: #1A3A5C">关键主体提取</h4>
+              </div>
+              <div class="space-y-2">
+                <div v-if="analysisResult.key_entities.names && analysisResult.key_entities.names.length > 0" class="p-3 rounded bg-gray-50">
+                  <p class="text-xs font-semibold mb-1">人员：</p>
+                  <div class="flex flex-wrap gap-2">
+                    <span v-for="name in analysisResult.key_entities.names" :key="name" class="px-2 py-1 rounded text-xs bg-blue-100 text-blue-800">
+                      {{ name }}
+                    </span>
+                  </div>
+                </div>
+                <div v-if="analysisResult.key_entities.roles && analysisResult.key_entities.roles.length > 0" class="p-3 rounded bg-gray-50">
+                  <p class="text-xs font-semibold mb-1">角色：</p>
+                  <div class="flex flex-wrap gap-2">
+                    <span v-for="role in analysisResult.key_entities.roles" :key="role" class="px-2 py-1 rounded text-xs bg-green-100 text-green-800">
+                      {{ role }}
+                    </span>
+                  </div>
+                </div>
+                <div v-if="analysisResult.key_entities.contacts && analysisResult.key_entities.contacts.length > 0" class="p-3 rounded bg-gray-50">
+                  <p class="text-xs font-semibold mb-1">联系方式：</p>
+                  <div class="flex flex-wrap gap-2">
+                    <span v-for="contact in analysisResult.key_entities.contacts" :key="contact" class="px-2 py-1 rounded text-xs bg-yellow-100 text-yellow-800">
+                      {{ contact }}
+                    </span>
+                  </div>
+                </div>
+                <div v-if="analysisResult.key_entities.amounts && analysisResult.key_entities.amounts.length > 0" class="p-3 rounded bg-gray-50">
+                  <p class="text-xs font-semibold mb-1">金额：</p>
+                  <div class="flex flex-wrap gap-2">
+                    <span v-for="amount in analysisResult.key_entities.amounts" :key="amount" class="px-2 py-1 rounded text-xs bg-red-100 text-red-800">
+                      {{ amount }}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 涉嫌罪名 -->
+            <div v-if="analysisResult?.crime_type" class="app-card p-5">
+              <div class="flex items-center gap-2 mb-3">
+                <span class="text-lg">⚖️</span>
+                <h4 class="font-bold text-sm" style="color: #1A3A5C">涉嫌罪名</h4>
+              </div>
+              <div class="p-3 rounded-lg text-sm" style="background: #EEF3F8; border: 1px solid #D0D5DD">
+                <p class="font-semibold">{{ analysisResult.crime_type }}</p>
+              </div>
+            </div>
+
+            <div v-if="analysisError" class="app-card p-4">
+              <el-alert type="error" :title="analysisError" :closable="false" show-icon />
             </div>
           </div>
         </div>
@@ -522,7 +762,6 @@ function syncToLedger() {
                   :icon="Document"
                   class="flex-1 h-10 font-semibold"
                   style="background: #1A3A5C; border-color: #1A3A5C"
-                  :disabled="transferAnalysisDone"
                   @click="syncToLedger"
                 >
                   同步至证据清单
@@ -599,35 +838,6 @@ function syncToLedger() {
                 </div>
               </div>
             </div>
-
-            <div class="app-card p-5">
-              <div class="flex justify-between items-center mb-3">
-                <h4 class="font-bold text-sm" style="color: #1A3A5C">📋 交易明细表 <span class="text-xs font-normal" style="color: #888">（数据预览，请核对正确性）</span></h4>
-                <el-button size="small" :icon="Document" style="color: #1A3A5C; border-color: #D0D5DD">
-                  导出 CSV
-                </el-button>
-              </div>
-              <el-table :data="transferResult?.records ?? []" stripe size="small" max-height="280">
-                <el-table-column prop="payer" label="付款方" width="100" />
-                <el-table-column prop="payee" label="收款方" width="100" />
-                <el-table-column label="金额" width="100" align="right">
-                  <template #default="scope">
-                    <span class="font-bold" style="color: #F59E0B">¥{{ scope.row.amount.toLocaleString() }}</span>
-                  </template>
-                </el-table-column>
-                <el-table-column prop="time" label="时间" width="130" />
-                <el-table-column prop="channel" label="渠道" width="100">
-                  <template #default="scope">
-                    <span class="tag-info">{{ scope.row.channel }}</span>
-                  </template>
-                </el-table-column>
-                <el-table-column prop="caseId" label="关联案件" width="140" />
-              </el-table>
-            </div>
-
-            <div v-if="store.transfer.status === 'error'" class="app-card p-4">
-              <el-alert type="error" :title="store.transfer.error ?? undefined" :closable="false" show-icon />
-            </div>
           </div>
         </div>
       </div>
@@ -669,7 +879,7 @@ function syncToLedger() {
                 v-model="logisticsInput"
                 type="textarea"
                 :rows="10"
-                placeholder="粘贴示例格式：&#10;快递单号 | 发件人 | 收件人 | 时间 | 渠道&#10;SF1234567890 | 刘某某 | 曹某某 | 2024-03-10 | 顺丰速运&#10;..."
+                placeholder="粘贴示例格式：&#10;快递单号 | 发件人 | 收件人 | 时间 | 快递公司&#10;SF1234567890 | 刘某某 | 曹某某 | 2024-03-10 | 顺丰速运&#10;..."
                 style="font-family: monospace; font-size: 13px; line-height: 1.8"
               />
               <div
@@ -678,13 +888,13 @@ function syncToLedger() {
                 style="background: rgba(248, 250, 252, 0.95)"
               >
                 <div class="text-center">
-                  <p class="text-base font-semibold mb-3" style="color: #1A3A5C">📦 正在解析物流数据...</p>
+                  <p class="text-base font-semibold mb-3" style="color: #1A3A5C">🚚 正在解析物流数据...</p>
                   <div class="w-48 h-2 rounded-full overflow-hidden mx-auto mb-2" style="background: #E2E8F0">
-                    <div class="h-full rounded-full transition-all duration-300" style="background: linear-gradient(90deg, #1A3A5C, #27AE60); width: 70%" />
+                    <div class="h-full rounded-full transition-all duration-300" style="background: linear-gradient(90deg, #1A3A5C, #F59E0B); width: 60%" />
                   </div>
                   <div class="text-xs space-y-1" style="color: #888">
-                    <p>✓ 已识别快递记录</p>
-                    <p>✓ 已匹配收发件人信息</p>
+                    <p>✓ 已识别物流记录</p>
+                    <p>✓ 已匹配收发件人</p>
                     <p>⏳ 正在分析物流轨迹...</p>
                   </div>
                 </div>
@@ -724,10 +934,6 @@ function syncToLedger() {
               </div>
             </div>
 
-            <div v-if="store.logistics.status === 'error'" class="mt-2">
-              <el-alert type="error" :title="store.logistics.error ?? undefined" :closable="false" show-icon />
-            </div>
-
             <el-button
               type="primary"
               class="w-full mt-3 h-12 text-base font-bold"
@@ -745,7 +951,6 @@ function syncToLedger() {
                   :icon="Document"
                   class="flex-1 h-10 font-semibold"
                   style="background: #1A3A5C; border-color: #1A3A5C"
-                  :disabled="logisticsAnalysisDone"
                   @click="syncToLedger"
                 >
                   同步至证据清单
@@ -777,81 +982,50 @@ function syncToLedger() {
           <div v-else class="space-y-4">
             <div class="grid grid-cols-3 gap-4">
               <div class="app-card text-center p-4">
-                <p class="text-xs font-semibold mb-1" style="color: #888">📦 总发货量</p>
-                <p class="text-3xl font-black" style="color: #1A3A5C">{{ logisticsResult?.totalShipments }}</p>
+                <p class="text-xs font-semibold mb-1" style="color: #888">📦 包裹总数</p>
+                <p class="text-3xl font-black" style="color: #1A3A5C">{{ logisticsResult?.totalPackages }}</p>
                 <p class="text-xs" style="color: #aaa">件</p>
               </div>
               <div class="app-card text-center p-4">
-                <p class="text-xs font-semibold mb-1" style="color: #888">🚚 快递单数</p>
-                <p class="text-3xl font-black" style="color: #27AE60">{{ logisticsResult?.expressCount }}</p>
-                <p class="text-xs" style="color: #aaa">单</p>
+                <p class="text-xs font-semibold mb-1" style="color: #888">📤 发件人</p>
+                <p class="text-3xl font-black" style="color: #1A3A5C">{{ logisticsResult?.senderCount }}</p>
+                <p class="text-xs" style="color: #aaa">人</p>
               </div>
               <div class="app-card text-center p-4">
-                <p class="text-xs font-semibold mb-1" style="color: #888">👥 涉案人员</p>
-                <p class="text-3xl font-black" style="color: #1A3A5C">{{ logisticsResult?.personCount }}</p>
+                <p class="text-xs font-semibold mb-1" style="color: #888">📥 收件人</p>
+                <p class="text-3xl font-black" style="color: #1A3A5C">{{ logisticsResult?.receiverCount }}</p>
                 <p class="text-xs" style="color: #aaa">人</p>
               </div>
             </div>
 
-            <div
-              v-if="(logisticsResult?.suspiciousShipments ?? []).length > 0"
-              class="app-card p-5"
-              style="border: 1px solid #F5C6C2; background: #FDECEA"
-            >
+            <div class="app-card p-5">
               <div class="flex items-center gap-2 mb-3">
-                <span class="text-lg">🚨</span>
-                <h4 class="font-bold text-sm" style="color: #C0392B">
-                  可疑物流 {{ logisticsResult?.suspiciousShipments.length }} 条
-                </h4>
+                <span class="text-lg">🏆</span>
+                <h4 class="font-bold text-sm" style="color: #1A3A5C">高频发件人 TOP{{ logisticsResult?.topSenders.length }}</h4>
               </div>
               <div class="space-y-2">
                 <div
-                  v-for="(ship, idx) in logisticsResult?.suspiciousShipments ?? []"
+                  v-for="(item, idx) in logisticsResult?.topSenders ?? []"
                   :key="idx"
-                  class="p-3 rounded-lg text-sm"
-                  style="background: white; border: 1px solid #F5C6C2"
+                  class="flex items-center gap-3"
                 >
-                  <div class="flex items-center gap-2 mb-1">
-                    <span class="font-bold text-sm" style="color: #1A3A5C">{{ ship.expressNo }}</span>
-                    <span class="tag-danger">{{ ship.channel }}</span>
+                  <span
+                    class="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold"
+                    :class="idx === 0 ? 'bg-amber-500 text-white' : idx === 1 ? 'bg-gray-400 text-white' : 'bg-amber-700 text-white'"
+                  >
+                    {{ idx + 1 }}
+                  </span>
+                  <span class="font-semibold text-sm" style="color: #1A3A5C">{{ item.name }}</span>
+                  <div class="flex-1 h-2 rounded-full bg-gray-200">
+                    <div
+                      class="h-full rounded-full"
+                      :class="idx === 0 ? 'bg-amber-500' : 'bg-[#1A3A5C]'"
+                      :style="'width:' + item.percent + '%'"
+                    />
                   </div>
-                  <div class="text-xs" style="color: #555">
-                    {{ ship.sender }} → {{ ship.receiver }} ｜ {{ ship.time }}
-                  </div>
-                  <div class="mt-1 text-xs" style="color: #C0392B">
-                    ⚠️ {{ ship.reason }}
-                  </div>
+                  <span class="text-sm font-bold" style="color: #1A3A5C">{{ item.count }} 件</span>
                 </div>
               </div>
-            </div>
-
-            <div class="app-card p-5">
-              <div class="flex justify-between items-center mb-3">
-                <h4 class="font-bold text-sm" style="color: #1A3A5C">📋 物流明细表 <span class="text-xs font-normal" style="color: #888">（数据预览，请核对正确性）</span></h4>
-                <el-button size="small" :icon="Document" style="color: #1A3A5C; border-color: #D0D5DD">
-                  导出 CSV
-                </el-button>
-              </div>
-              <el-table :data="logisticsResult?.records ?? []" stripe size="small" max-height="280">
-                <el-table-column prop="expressNo" label="快递单号" width="150" />
-                <el-table-column prop="sender" label="发件人" width="100" />
-                <el-table-column prop="receiver" label="收件人" width="100" />
-                <el-table-column prop="time" label="时间" width="130" />
-                <el-table-column prop="channel" label="渠道" width="100">
-                  <template #default="scope">
-                    <span class="tag-info">{{ scope.row.channel }}</span>
-                  </template>
-                </el-table-column>
-                <el-table-column label="状态" width="80">
-                  <template #default>
-                    <span class="tag-info">正常</span>
-                  </template>
-                </el-table-column>
-              </el-table>
-            </div>
-
-            <div v-if="store.logistics.status === 'error'" class="app-card p-4">
-              <el-alert type="error" :title="store.logistics.error ?? undefined" :closable="false" show-icon />
             </div>
           </div>
         </div>
@@ -859,62 +1033,3 @@ function syncToLedger() {
     </div>
   </div>
 </template>
-
-<style scoped>
-.evidence-highlight {
-  animation: evidence-flash 0.5s ease-in-out 0s 2;
-}
-@keyframes evidence-flash {
-  0% { background: #fef2f2; }
-  50% { background: #fecaca; }
-  100% { background: #fef2f2; }
-}
-.action-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 14px;
-  font-size: 13px;
-  font-weight: 500;
-  border-radius: 8px;
-  border: 1px solid transparent;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  white-space: nowrap;
-}
-.action-btn svg {
-  flex-shrink: 0;
-}
-.action-btn-primary {
-  background: #EEF3F8;
-  color: #1A3A5C;
-  border-color: #D0D5DD;
-}
-.action-btn-primary:hover {
-  background: #1A3A5C;
-  color: #ffffff;
-  border-color: #1A3A5C;
-  transform: translateY(-1px);
-  box-shadow: 0 2px 8px rgba(26, 58, 92, 0.25);
-}
-.action-btn-primary:active {
-  transform: translateY(0);
-  box-shadow: none;
-}
-.action-btn-danger {
-  background: #FEF2F2;
-  color: #C0392B;
-  border-color: #F5C6C2;
-}
-.action-btn-danger:hover {
-  background: #C0392B;
-  color: #ffffff;
-  border-color: #C0392B;
-  transform: translateY(-1px);
-  box-shadow: 0 2px 8px rgba(192, 57, 43, 0.25);
-}
-.action-btn-danger:active {
-  transform: translateY(0);
-  box-shadow: none;
-}
-</style>

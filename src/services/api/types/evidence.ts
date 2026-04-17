@@ -89,6 +89,6 @@ export interface EvidenceRepository {
   analyzeChat(req: AnalyzeChatRequest): Promise<AnalyzeChatResponse>;
   analyzeTransfer(req: AnalyzeTransferRequest): Promise<AnalyzeTransferResponseResult>;
   analyzeLogistics(req: AnalyzeLogisticsRequest): Promise<AnalyzeLogisticsResponseResult>;
-  uploadFile(req: UploadFileRequest): Promise<UploadFileResponseResult>;
+  uploadFile(url: string, formData: FormData, config?: any): Promise<any>;
   importEvidence(req: ImportEvidenceRequest): Promise<ImportEvidenceResponseResult>;
 }

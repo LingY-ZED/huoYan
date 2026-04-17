@@ -2,10 +2,10 @@
 import { ref, computed, onMounted, nextTick, onBeforeUnmount, watch } from "vue";
 import * as echarts from "echarts";
 import type { ECharts } from "echarts";
-import { ElButton, ElInput, ElSelect } from "element-plus";
+import { ElButton, ElInput, ElSelect, ElMessage, ElLoading } from "element-plus";
 import { Search } from "@element-plus/icons-vue";
-import { mockCrossCaseGraph, mockUpstreamGraphByCaseId } from "@/mocks/graphs";
-import type { UpstreamGraph } from "@/entities/graph";
+import { repositories } from "@/services";
+import type { UpstreamGraph, CrossCaseGraph } from "@/entities/graph";
 import { useRoute } from "vue-router";
 
 const route = useRoute();
@@ -19,19 +19,15 @@ const upstreamRef = ref<HTMLDivElement | null>(null);
 const crossChart = ref<ECharts | null>(null);
 const upstreamChart = ref<ECharts | null>(null);
 
-const crossGraph = mockCrossCaseGraph.data!;
-const cases = [
-  { id: "2024-京二检-001", suspect: "曹某某" },
-  { id: "2024-京二检-002", suspect: "刘某某" },
-  { id: "2024-京二检-003", suspect: "陈某强" },
-  { id: "2024-京二检-004", suspect: "周某某" },
-];
-
-const upstreamDataMap: Record<string, UpstreamGraph> = mockUpstreamGraphByCaseId;
-const currentUpstreamCase = computed(() => cases.find((c) => c.id === selectedCaseId.value));
+const crossGraph = ref<CrossCaseGraph | null>(null);
+const upstreamData = ref<UpstreamGraph | null>(null);
+const cases = ref<any[]>([]);
+const personLedger = ref<any[]>([]);
+const loading = ref(false);
+const currentUpstreamCase = computed(() => cases.value.find((c) => c.id === selectedCaseId.value));
 
 const upstreamStats = computed(() => {
-  const d = upstreamDataMap[selectedCaseId.value];
+  const d = upstreamData.value;
   if (!d) return { nodes: 0, links: 0, suppliers: 0, buyers: 0 };
   return {
     nodes: d.suppliers.length + 1 + d.buyers.length + d.middle.length,
@@ -41,10 +37,87 @@ const upstreamStats = computed(() => {
   };
 });
 
-const upstreamSuppliers = computed(() => upstreamDataMap[selectedCaseId.value]?.suppliers ?? []);
-const upstreamBuyers = computed(() => upstreamDataMap[selectedCaseId.value]?.buyers ?? []);
+const upstreamSuppliers = computed(() => upstreamData.value?.suppliers ?? []);
+const upstreamBuyers = computed(() => upstreamData.value?.buyers ?? []);
 
-const graphStats = ref({ nodes: 7, links: 7, keyNodes: 3, linkedCases: 4 });
+const graphStats = ref({ nodes: 0, links: 0, keyNodes: 0, linkedCases: 0 });
+
+// 加载案件列表
+async function loadCases() {
+  try {
+    const response = await repositories.cases.listCases({
+      limit: 100,
+      offset: 0,
+    });
+    if (response.code === 0) {
+      cases.value = response.data!.list.map(c => ({
+        id: c.id.toString(),
+        suspect: c.suspect_name
+      }));
+      if (cases.value.length > 0 && !selectedCaseId.value) {
+        selectedCaseId.value = cases.value[0].id;
+      }
+    }
+  } catch (error) {
+    console.error('加载案件列表失败:', error);
+  }
+}
+
+// 加载跨案关联数据
+async function loadCrossCaseGraph() {
+  loading.value = true;
+  try {
+    const response = await repositories.relations.getCrossCaseGraph();
+    if (response.code === 0) {
+      crossGraph.value = response.data;
+      if (crossGraph.value) {
+        graphStats.value = {
+          nodes: crossGraph.value.nodes.length,
+          links: crossGraph.value.links.length,
+          keyNodes: crossGraph.value.nodes.filter(n => n.role === '核心嫌疑人').length,
+          linkedCases: new Set(crossGraph.value.nodes.map(n => n.caseId)).size
+        };
+      }
+    } else {
+      ElMessage.error("获取跨案关联数据失败");
+    }
+  } catch (error) {
+    ElMessage.error("获取跨案关联数据失败，请稍后重试");
+    console.error("获取跨案关联数据失败:", error);
+  } finally {
+    loading.value = false;
+  }
+}
+
+// 加载人员台账数据
+async function loadPersonLedger() {
+  try {
+    const response = await repositories.relations.getPersonLedger();
+    if (response.code === 0) {
+      personLedger.value = response.data;
+    }
+  } catch (error) {
+    console.error('加载人员台账数据失败:', error);
+  }
+}
+
+// 加载上游关系数据
+async function loadUpstreamGraph(caseId: string) {
+  loading.value = true;
+  try {
+    const response = await repositories.relations.getUpstreamGraph({ caseId });
+    if (response.code === 0) {
+      upstreamData.value = response.data;
+    } else {
+      ElMessage.error("获取上游关系数据失败");
+    }
+  } catch (error) {
+    ElMessage.error("获取上游关系数据失败，请稍后重试");
+    console.error("获取上游关系数据失败:", error);
+  } finally {
+    loading.value = false;
+  }
+}
 
 function truncateName(name: string) {
   return name.length > 5 ? name.substring(0, 5) + "…" : name;
@@ -148,14 +221,13 @@ function initGraph(
 }
 
 function initCrossChart() {
-  if (!crossRef.value) return;
-  initGraph(crossRef.value, crossChart.value, crossGraph.nodes, crossGraph.links, "cross");
+  if (!crossRef.value || !crossGraph.value) return;
+  initGraph(crossRef.value, crossChart.value, crossGraph.value.nodes, crossGraph.value.links, "cross");
 }
 
 function initUpstreamChart() {
-  if (!upstreamRef.value) return;
-  const d = upstreamDataMap[selectedCaseId.value];
-  if (!d) return;
+  if (!upstreamRef.value || !upstreamData.value) return;
+  const d = upstreamData.value;
 
   const allNodes = [
     ...d.suppliers.map((s) => ({ ...s })),
@@ -164,20 +236,17 @@ function initUpstreamChart() {
     ...d.middle.map((m) => ({ ...m })),
   ];
 
-  if (selectedCaseId.value === "2024-京二检-001") {
-    allNodes.push({ name: "农行***4589", role: "共用结算", itemStyle: { color: "#7C3AED" }, symbolSize: 42, symbol: "rect" });
-  }
-
   initGraph(upstreamRef.value, upstreamChart.value, allNodes, d.links, "upstream");
 }
 
 function reloadUpstream() {
+  loadUpstreamGraph(selectedCaseId.value);
   nextTick(() => initUpstreamChart());
 }
 
 function highlightSearch() {
-  if (!nodeSearch.value.trim() || !crossGraph) return;
-  const found = crossGraph.nodes.find((n) => n.name.includes(nodeSearch.value.trim()));
+  if (!nodeSearch.value.trim() || !crossGraph.value) return;
+  const found = crossGraph.value.nodes.find((n) => n.name.includes(nodeSearch.value.trim()));
   if (found) selectedNode.value = found;
 }
 
@@ -196,9 +265,11 @@ watch(
   (newPath) => {
     if (newPath.includes("/relations/upstream")) {
       graphTab.value = "upstream";
+      loadUpstreamGraph(selectedCaseId.value);
       nextTick(() => initUpstreamChart());
     } else if (newPath.includes("/relations/crosscase")) {
       graphTab.value = "crosscase";
+      loadCrossCaseGraph();
       nextTick(() => initCrossChart());
     }
   },
@@ -206,7 +277,20 @@ watch(
 );
 
 onMounted(() => {
-  nextTick(() => initUpstreamChart());
+  loadCases();
+  loadPersonLedger();
+  if (graphTab.value === "upstream") {
+    loadUpstreamGraph(selectedCaseId.value);
+  } else {
+    loadCrossCaseGraph();
+  }
+  nextTick(() => {
+    if (graphTab.value === "upstream") {
+      initUpstreamChart();
+    } else {
+      initCrossChart();
+    }
+  });
 });
 
 onBeforeUnmount(() => {

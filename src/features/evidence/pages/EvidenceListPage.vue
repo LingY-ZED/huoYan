@@ -1,88 +1,106 @@
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed, onMounted } from "vue";
 import { ElButton, ElTable, ElTableColumn, ElInput, ElSelect, ElOption, ElTag, ElMessage, ElMessageBox } from "element-plus";
 import { Search, Download, Upload, CircleCheck } from "@element-plus/icons-vue";
 import { StatCard, PrimaryButton } from "@/shared/components";
+import { repositories } from "@/services";
 
 const searchText = ref("");
 const filterType = ref("");
 const filterStatus = ref("");
 
-interface EvidenceItem {
-  id: string;
-  caseId: string;
-  caseName: string;
-  type: "chat" | "transfer" | "logistics";
-  typeName: string;
-  fileName: string;
-  recordCount: number;
-  uploadTime: string;
-  status: "pending" | "analyzed" | "imported";
-  statusName: string;
+// 加载状态
+const loading = ref(false);
+
+// 线索数据类型（与后端保持一致）
+interface ClueItem {
+  id: number;
+  case_id: number;
+  clue_type: string;
+  evidence_text: string;
+  hit_keywords: string;
+  score: number;
+  crime_type: string;
+  severity_level: string;
 }
 
-const evidenceList = ref<EvidenceItem[]>([
-  { id: "EV-001", caseId: "2024-京二检-001", caseName: "曹某某销售假冒注册商标商品案", type: "chat", typeName: "聊天记录", fileName: "微信聊天记录_曹某某.txt", recordCount: 156, uploadTime: "2024-03-15 14:30", status: "imported", statusName: "已导入" },
-  { id: "EV-002", caseId: "2024-京二检-001", caseName: "曹某某销售假冒注册商标商品案", type: "transfer", typeName: "资金流水", fileName: "银行流水_曹某某.csv", recordCount: 89, uploadTime: "2024-03-15 15:20", status: "analyzed", statusName: "已解析" },
-  { id: "EV-003", caseId: "2024-京二检-002", caseName: "刘某某生产销售伪劣产品案", type: "chat", typeName: "聊天记录", fileName: "微信聊天_刘某某.txt", recordCount: 234, uploadTime: "2024-03-14 10:15", status: "imported", statusName: "已导入" },
-  { id: "EV-004", caseId: "2024-京二检-002", caseName: "刘某某生产销售伪劣产品案", type: "logistics", typeName: "物流记录", fileName: "快递单号汇总.csv", recordCount: 45, uploadTime: "2024-03-14 11:30", status: "pending", statusName: "待解析" },
-  { id: "EV-005", caseId: "2024-京二检-003", caseName: "陈某强销售侵权复制品案", type: "transfer", typeName: "资金流水", fileName: "支付宝流水_陈某强.csv", recordCount: 67, uploadTime: "2024-03-13 09:45", status: "analyzed", statusName: "已解析" },
-]);
+const clueList = ref<ClueItem[]>([]);
+
+// 加载线索数据
+async function loadClues() {
+  loading.value = true;
+  try {
+    // 这里暂时使用一个示例案件ID，实际应该从路由参数或用户选择中获取
+    const caseId = "1";
+    const response = await repositories.cases.getCaseSuspicious(caseId);
+    
+    if (Array.isArray(response)) {
+      clueList.value = response;
+    } else if (response.code === 0) {
+      clueList.value = response.data || [];
+    }
+  } catch (error) {
+    ElMessage.error("获取线索列表失败，请稍后重试");
+    console.error("获取线索列表失败:", error);
+  } finally {
+    loading.value = false;
+  }
+}
+
+// 查看线索详情
+async function viewClueDetail(clueId: number) {
+  try {
+    const response = await repositories.cases.getClueDetail(clueId.toString());
+    if (response.code === 0) {
+      // 这里可以显示线索详情弹窗
+      console.log("线索详情:", response.data);
+      ElMessage.info(`查看线索详情：${clueId}`);
+    } else if (response) {
+      console.log("线索详情:", response);
+      ElMessage.info(`查看线索详情：${clueId}`);
+    }
+  } catch (error) {
+    ElMessage.error("获取线索详情失败，请稍后重试");
+    console.error("获取线索详情失败:", error);
+  }
+}
 
 const filteredList = computed(() => {
-  return evidenceList.value.filter((item) => {
+  return clueList.value.filter((item) => {
     const matchSearch = !searchText.value ||
-      item.id.includes(searchText.value) ||
-      item.caseName.includes(searchText.value) ||
-      item.fileName.includes(searchText.value);
-    const matchType = !filterType.value || item.type === filterType.value;
-    const matchStatus = !filterStatus.value || item.status === filterStatus.value;
+      item.id.toString().includes(searchText.value) ||
+      item.evidence_text.includes(searchText.value) ||
+      item.hit_keywords.includes(searchText.value);
+    const matchType = !filterType.value || item.clue_type === filterType.value;
+    const matchStatus = !filterStatus.value || item.severity_level === filterStatus.value;
     return matchSearch && matchType && matchStatus;
   });
 });
 
-const totalCount = computed(() => evidenceList.value.length);
-const importedCount = computed(() => evidenceList.value.filter((item) => item.status === "imported").length);
-const pendingCount = computed(() => evidenceList.value.filter((item) => item.status === "pending" || item.status === "analyzed").length);
+const totalCount = computed(() => clueList.value.length);
+const severeCount = computed(() => clueList.value.filter((item) => item.severity_level === "刑事犯罪").length);
+const mediumCount = computed(() => clueList.value.filter((item) => item.severity_level === "民事侵权").length);
 
-function getStatusTag(status: string) {
+function getSeverityTag(severity: string) {
   const map: Record<string, "success" | "warning" | "info" | "danger"> = {
-    pending: "warning",
-    analyzed: "info",
-    imported: "success",
+    "刑事犯罪": "danger",
+    "民事侵权": "warning",
+    "行政违法": "info",
   };
-  return map[status] || "info";
+  return map[severity] || "info";
 }
 
-function getTypeTag(type: string) {
+function getClueTypeTag(type: string) {
   const map: Record<string, "success" | "warning" | "info" | "danger"> = {
-    chat: "danger",
-    transfer: "warning",
-    logistics: "info",
+    "主观明知": "danger",
+    "价格异常": "warning",
+    "角色异常": "info",
   };
   return map[type] || "info";
 }
 
-function viewDetail(row: EvidenceItem) {
-  ElMessage.info(`查看证据详情：${row.id}`);
-}
-
-async function deleteItem(row: EvidenceItem) {
-  try {
-    await ElMessageBox.confirm(`确定删除证据 ${row.id}？此操作不可恢复。`, "删除确认", {
-      confirmButtonText: "确定删除",
-      cancelButtonText: "取消",
-      type: "warning",
-    });
-    evidenceList.value = evidenceList.value.filter((item) => item.id !== row.id);
-    ElMessage.success("删除成功");
-  } catch {
-    // cancelled
-  }
-}
-
 function exportList() {
-  ElMessage.success("证据清单导出中...");
+  ElMessage.success("线索清单导出中...");
 }
 
 function goToUpload() {
@@ -98,6 +116,11 @@ function resetFilter() {
   filterType.value = "";
   filterStatus.value = "";
 }
+
+// 组件挂载时加载数据
+onMounted(() => {
+  loadClues();
+});
 </script>
 
 <template>
@@ -105,7 +128,7 @@ function resetFilter() {
     <div class="app-card p-5">
       <div class="flex justify-between items-center">
         <div class="flex items-center gap-4">
-          <div class="card-title !mb-0">📄 证据清单管理</div>
+          <div class="card-title !mb-0">📄 线索清单管理</div>
           <span class="text-sm text-gray-500">共 {{ filteredList.length }} 条记录</span>
         </div>
         <div class="flex gap-2">
@@ -119,49 +142,52 @@ function resetFilter() {
     </div>
 
     <div class="grid grid-cols-3 gap-5">
-      <StatCard title="证据总数" :value="totalCount" unit="份" icon="📂" color="brand" />
-      <StatCard title="已入库" :value="importedCount" unit="份" icon="✅" color="safe" />
-      <StatCard title="待审核" :value="pendingCount" unit="份" icon="⏳" color="alert" />
+      <StatCard title="线索总数" :value="totalCount" unit="条" icon="📂" color="brand" />
+      <StatCard title="刑事犯罪" :value="severeCount" unit="条" icon="⚡" color="danger" />
+      <StatCard title="民事侵权" :value="mediumCount" unit="条" icon="⚠️" color="warning" />
     </div>
 
     <div class="app-card p-5">
       <div class="flex gap-4 mb-4 items-center">
-        <ElInput v-model="searchText" placeholder="搜索证据ID/案件名称/文件名" :prefix-icon="Search" class="!w-[280px]" clearable />
-        <ElSelect v-model="filterType" placeholder="证据类型" clearable class="!w-[140px]">
-          <ElOption label="聊天记录" value="chat" />
-          <ElOption label="资金流水" value="transfer" />
-          <ElOption label="物流记录" value="logistics" />
+        <ElInput v-model="searchText" placeholder="搜索线索ID/证据原文/命中关键词" :prefix-icon="Search" class="!w-[280px]" clearable />
+        <ElSelect v-model="filterType" placeholder="线索类型" clearable class="!w-[140px]">
+          <ElOption label="主观明知" value="主观明知" />
+          <ElOption label="价格异常" value="价格异常" />
+          <ElOption label="角色异常" value="角色异常" />
         </ElSelect>
-        <ElSelect v-model="filterStatus" placeholder="处理状态" clearable class="!w-[140px]">
-          <ElOption label="待解析" value="pending" />
-          <ElOption label="已解析" value="analyzed" />
-          <ElOption label="已导入" value="imported" />
+        <ElSelect v-model="filterStatus" placeholder="严重程度" clearable class="!w-[140px]">
+          <ElOption label="刑事犯罪" value="刑事犯罪" />
+          <ElOption label="民事侵权" value="民事侵权" />
+          <ElOption label="行政违法" value="行政违法" />
         </ElSelect>
         <el-button @click="resetFilter">重置</el-button>
       </div>
 
-      <ElTable :data="filteredList" stripe class="w-full">
-        <ElTableColumn prop="id" label="证据ID" width="100" />
-        <ElTableColumn prop="caseId" label="案件编号" width="150" />
-        <ElTableColumn prop="caseName" label="案件名称" min-width="200" show-overflow-tooltip />
-        <ElTableColumn prop="typeName" label="证据类型" width="100">
+      <ElTable :data="filteredList" stripe class="w-full" v-loading="loading">
+        <ElTableColumn prop="id" label="线索ID" width="100" />
+        <ElTableColumn prop="case_id" label="案件ID" width="100" />
+        <ElTableColumn prop="clue_type" label="线索类型" width="120">
           <template #default="{ row }">
-            <ElTag :type="getTypeTag(row.type)" size="small">{{ row.typeName }}</ElTag>
+            <ElTag :type="getClueTypeTag(row.clue_type)" size="small">{{ row.clue_type }}</ElTag>
           </template>
         </ElTableColumn>
-        <ElTableColumn prop="fileName" label="文件名" min-width="180" show-overflow-tooltip />
-        <ElTableColumn prop="recordCount" label="记录数" width="80" align="center" />
-        <ElTableColumn prop="uploadTime" label="上传时间" width="150" />
-        <ElTableColumn prop="statusName" label="状态" width="90">
+        <ElTableColumn prop="evidence_text" label="证据原文" min-width="200" show-overflow-tooltip />
+        <ElTableColumn prop="hit_keywords" label="命中关键词" min-width="120" show-overflow-tooltip />
+        <ElTableColumn prop="score" label="评分" width="80" align="center">
           <template #default="{ row }">
-            <ElTag :type="getStatusTag(row.status)" size="small">{{ row.statusName }}</ElTag>
+            <span class="font-semibold">{{ row.score }}/10</span>
           </template>
         </ElTableColumn>
-        <ElTableColumn label="操作" width="140" fixed="right">
+        <ElTableColumn prop="crime_type" label="涉嫌罪名" min-width="150" show-overflow-tooltip />
+        <ElTableColumn prop="severity_level" label="严重程度" width="120">
+          <template #default="{ row }">
+            <ElTag :type="getSeverityTag(row.severity_level)" size="small">{{ row.severity_level }}</ElTag>
+          </template>
+        </ElTableColumn>
+        <ElTableColumn label="操作" width="100" fixed="right">
           <template #default="{ row }">
             <div class="flex gap-1">
-              <el-button size="small" class="!text-brand" @click="viewDetail(row)">查看</el-button>
-              <el-button size="small" type="danger" @click="deleteItem(row)">删除</el-button>
+              <el-button size="small" class="!text-brand" @click="viewClueDetail(row.id)">查看</el-button>
             </div>
           </template>
         </ElTableColumn>

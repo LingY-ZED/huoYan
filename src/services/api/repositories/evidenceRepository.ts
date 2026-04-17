@@ -13,16 +13,16 @@ export function createApiEvidenceRepository(): EvidenceRepository {
     async analyzeLogistics(req) {
       return post("/evidence/analyze-logistics", req);
     },
-    async uploadFile(req): Promise<UploadFileResponseResult> {
-      const formData = new FormData();
-      formData.append("file", req.file);
-      formData.append("evidenceType", req.evidenceType);
-      const res = await httpClient.post<FormData, { code: number; message: string; data: { rawText: string; fileName: string; recordCount: number } }>(
-        "/evidence/upload",
+    async uploadFile(url: string, formData: FormData, config?: any) {
+      const res = await httpClient.post<FormData, any>(
+        url,
         formData,
-        { headers: { "Content-Type": "multipart/form-data" } }
+        {
+          headers: { "Content-Type": "multipart/form-data" },
+          ...config
+        }
       );
-      return res.data as unknown as UploadFileResponseResult;
+      return res.data;
     },
     async importEvidence(req) {
       return post("/evidence/import", req);

@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, watch, computed } from "vue";
+import { ref, watch, computed, onMounted } from "vue";
 import { useRoute } from "vue-router";
-import { ElButton, ElTable, ElTableColumn, ElDialog, ElInput, ElSelect, ElMessage } from "element-plus";
+import { ElButton, ElTable, ElTableColumn, ElDialog, ElInput, ElSelect, ElMessage, ElCheckbox, ElLoading } from "element-plus";
 import { Document, Download, Edit, Search } from "@element-plus/icons-vue";
+import { repositories } from "@/services";
 
 const route = useRoute();
 const ledgerTab = ref<"fund" | "person" | "report">("person");
@@ -22,39 +23,116 @@ watch(
   { immediate: true }
 );
 
-const fundRecords = ref([
-  { date: "2024-03-10", from: "曹某某", to: "刘某某", amount: 20200, channel: "银行转账", caseId: "2024-京二检-001" },
-  { date: "2024-03-10", from: "曹某某", to: "经销商A", amount: 14000, channel: "微信转账", caseId: "2024-京二检-001" },
-  { date: "2024-03-12", from: "曹某某", to: "刘某某", amount: 8400, channel: "银行转账", caseId: "2024-京二检-001" },
-  { date: "2024-03-08", from: "刘某某", to: "曹某某", amount: 15200, channel: "支付宝转账", caseId: "2024-京二检-002" },
-  { date: "2024-03-14", from: "陈某强", to: "曹某某", amount: 18600, channel: "银行转账", caseId: "2024-京二检-003" },
-]);
+// 加载状态
+const loading = ref(false);
+const fundLoading = ref(false);
+const personLoading = ref(false);
 
-const personFilter = ref({ name: "", caseId: "" });
-const caseOptions = [
-  { label: "全部案件", value: "" },
-  { label: "2024-京二检-001 — 曹某某", value: "2024-京二检-001" },
-  { label: "2024-京二检-002 — 刘某某", value: "2024-京二检-002" },
-  { label: "2024-京二检-003 — 陈某强", value: "2024-京二检-003" },
-  { label: "2024-京二检-004 — 周某某", value: "2024-京二检-004" },
-];
+// 资金流水数据
+const fundRecords = ref<any[]>([]);
 
-const personList = ref([
-  { id: 1, name: "曹某某", role: "核心嫌疑人", amount: 156800, caseCount: 4, phone: "138****5678" },
-  { id: 2, name: "刘某某", role: "下游买家", amount: 89200, caseCount: 2, phone: "139****1234" },
-  { id: 3, name: "陈某强", role: "上游供货商", amount: 67500, caseCount: 3, phone: "137****9876" },
-  { id: 4, name: "周某某", role: "中间商", amount: 45300, caseCount: 1, phone: "136****5432" },
-  { id: 5, name: "经销商A", role: "上游供货商", amount: 32800, caseCount: 2, phone: "135****8765" },
-  { id: 6, name: "李某华", role: "资金账户持有人", amount: 28600, caseCount: 1, phone: "158****2468" },
-]);
+const personFilter = ref({ name: "", role: "" });
+const caseOptions = ref<any[]>([]);
+
+// 人员台账数据
+const personList = ref<any[]>([]);
+
+// 加载案件选项
+async function loadCaseOptions() {
+  try {
+    const response = await repositories.cases.listCases({
+      limit: 100,
+      offset: 0,
+    });
+    if (Array.isArray(response)) {
+      caseOptions.value = [
+        { label: "全部案件", value: "" },
+        ...response.map(c => ({
+          label: `${c.case_no} — ${c.suspect_name}`,
+          value: c.case_no
+        }))
+      ];
+    } else if (response.code === 0) {
+      caseOptions.value = [
+        { label: "全部案件", value: "" },
+        ...response.data!.list.map(c => ({
+          label: `${c.case_no} — ${c.suspect_name}`,
+          value: c.case_no
+        }))
+      ];
+    }
+  } catch (error) {
+    console.error("加载案件选项失败:", error);
+  }
+}
+
+// 加载资金流水数据
+async function loadFundRecords() {
+  fundLoading.value = true;
+  try {
+    const response = await repositories.relations.getFundFlows();
+    if (Array.isArray(response)) {
+      fundRecords.value = response;
+    } else if (response.code === 0) {
+      fundRecords.value = response.data || [];
+    }
+  } catch (error) {
+    ElMessage.error("获取资金流水失败，请稍后重试");
+    console.error("获取资金流水失败:", error);
+  } finally {
+    fundLoading.value = false;
+  }
+}
+
+// 加载人员台账数据
+async function loadPersonList() {
+  personLoading.value = true;
+  try {
+    const response = await repositories.relations.getPersonLedger();
+    if (Array.isArray(response)) {
+      personList.value = response;
+    } else if (response.code === 0) {
+      personList.value = response.data || [];
+    }
+  } catch (error) {
+    ElMessage.error("获取人员台账失败，请稍后重试");
+    console.error("获取人员台账失败:", error);
+  } finally {
+    personLoading.value = false;
+  }
+}
+
+// 监听 tab 变化，加载对应数据
+watch(
+  () => ledgerTab.value,
+  (newTab) => {
+    if (newTab === 'fund') {
+      loadFundRecords();
+    } else if (newTab === 'person') {
+      loadPersonList();
+    }
+  }
+);
+
+// 组件挂载时加载数据
+onMounted(() => {
+  loadCaseOptions();
+  if (ledgerTab.value === 'fund') {
+    loadFundRecords();
+  } else if (ledgerTab.value === 'person') {
+    loadPersonList();
+  }
+});
 
 const editDialogVisible = ref(false);
 const editingPerson = ref<any>(null);
 const editForm = ref({
   name: "",
   role: "",
-  amount: 0,
-  caseCount: 0,
+  is_authorized: false,
+  subjective_knowledge_score: 0,
+  illegal_business_amount: 0,
+  linked_cases: 0,
   phone: "",
 });
 
@@ -67,10 +145,17 @@ const roleOptions = [
   { label: "证人", value: "证人" },
 ];
 
+// 联系方式脱敏函数
+function maskPhone(phone: string): string {
+  if (!phone || phone.length < 11) return phone;
+  return phone.replace(/(\d{3})\d{4}(\d{4})/, '$1****$2');
+}
+
 const filteredPersonList = computed(() => {
   return personList.value.filter((person) => {
     const matchName = personFilter.value.name === "" || person.name.includes(personFilter.value.name);
-    return matchName;
+    const matchRole = personFilter.value.role === "" || person.role === personFilter.value.role;
+    return matchName && matchRole;
   });
 });
 
@@ -79,8 +164,10 @@ function openEditDialog(person: any) {
   editForm.value = {
     name: person.name,
     role: person.role,
-    amount: person.amount,
-    caseCount: person.caseCount,
+    is_authorized: person.is_authorized,
+    subjective_knowledge_score: person.subjective_knowledge_score,
+    illegal_business_amount: person.illegal_business_amount,
+    linked_cases: person.linked_cases,
     phone: person.phone,
   };
   editDialogVisible.value = true;
@@ -94,8 +181,10 @@ function saveEdit() {
         ...personList.value[index],
         name: editForm.value.name,
         role: editForm.value.role,
-        amount: editForm.value.amount,
-        caseCount: editForm.value.caseCount,
+        is_authorized: editForm.value.is_authorized,
+        subjective_knowledge_score: editForm.value.subjective_knowledge_score,
+        illegal_business_amount: editForm.value.illegal_business_amount,
+        linked_cases: editForm.value.linked_cases,
         phone: editForm.value.phone,
       };
     }
@@ -110,7 +199,42 @@ function cancelEdit() {
 }
 
 function resetPersonFilter() {
-  personFilter.value = { name: "", caseId: "" };
+  personFilter.value = { name: "", role: "" };
+}
+
+// 导出功能
+async function exportExcel(type: 'persons' | 'transactions') {
+  const loading = ElLoading.service({ fullscreen: true, text: '正在导出数据...' });
+  
+  try {
+    const response = await fetch(`http://localhost:8000/api/export/csv?type=${type}`, {
+      method: 'GET',
+      headers: {
+        'Accept': 'text/csv',
+      },
+    });
+    
+    if (!response.ok) {
+      throw new Error('导出失败');
+    }
+    
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `导出数据_${type}_${new Date().toISOString().split('T')[0]}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    
+    ElMessage.success('导出成功');
+  } catch (error) {
+    ElMessage.error('导出失败，请稍后重试');
+    console.error('导出失败:', error);
+  } finally {
+    loading.close();
+  }
 }
 </script>
 
@@ -144,25 +268,25 @@ function resetPersonFilter() {
         <div class="flex justify-between items-center mb-4">
           <h3 class="card-title !mb-0">💸 资金流水明细</h3>
           <div class="flex gap-2">
-            <el-button size="small" :icon="Download" style="color: #1A3A5C; border-color: #D0D5DD">导出 Excel</el-button>
+            <el-button size="small" :icon="Download" style="color: #1A3A5C; border-color: #D0D5DD" @click="exportExcel('transactions')">导出 Excel</el-button>
             <el-button size="small" type="primary" :icon="Document" style="background: #1A3A5C; border-color: #1A3A5C">新增记录</el-button>
           </div>
         </div>
-        <el-table :data="fundRecords" stripe size="small">
-          <el-table-column prop="date" label="日期" width="110" />
-          <el-table-column prop="from" label="付款方" width="120" />
-          <el-table-column prop="to" label="收款方" width="120" />
+        <el-table :data="fundRecords" stripe size="small" v-loading="fundLoading">
+          <el-table-column prop="transaction_time" label="日期" width="110" />
+          <el-table-column prop="payer" label="付款方" width="120" />
+          <el-table-column prop="payee" label="收款方" width="120" />
           <el-table-column label="金额" width="130" align="right">
             <template #default="scope">
               <span class="font-bold text-red-600">¥{{ scope.row.amount.toLocaleString() }}</span>
             </template>
           </el-table-column>
-          <el-table-column prop="channel" label="渠道" width="110">
+          <el-table-column prop="payment_method" label="渠道" width="110">
             <template #default="scope">
-              <span class="tag-info">{{ scope.row.channel }}</span>
+              <span class="tag-info">{{ scope.row.payment_method }}</span>
             </template>
           </el-table-column>
-          <el-table-column prop="caseId" label="关联案件" width="160" />
+          <el-table-column prop="case_id" label="关联案件" width="160" />
         </el-table>
       </div>
     </div>
@@ -195,24 +319,24 @@ function resetPersonFilter() {
         <div class="flex justify-between items-center mb-4">
           <h3 class="card-title !mb-0">👤 人物台账管理</h3>
           <div class="flex gap-2">
-            <el-button size="small" :icon="Download" style="color: #1A3A5C; border-color: #D0D5DD">导出 Excel</el-button>
+            <el-button size="small" :icon="Download" style="color: #1A3A5C; border-color: #D0D5DD" @click="exportExcel('persons')">导出 Excel</el-button>
             <el-button size="small" type="primary" :icon="Document" style="background: #1A3A5C; border-color: #1A3A5C">新增人员</el-button>
           </div>
         </div>
         <div class="flex gap-4 mb-4 items-center">
           <el-input v-model="personFilter.name" placeholder="搜索姓名" :prefix-icon="Search" class="!w-[180px]" clearable />
-          <el-select v-model="personFilter.caseId" placeholder="选择案件" class="!w-[220px]" clearable>
-            <el-option v-for="opt in caseOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
+          <el-select v-model="personFilter.role" placeholder="选择角色" class="!w-[220px]" clearable>
+            <el-option v-for="opt in roleOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
           </el-select>
           <el-button @click="resetPersonFilter">重置</el-button>
         </div>
-        <el-table :data="filteredPersonList" stripe size="small">
-          <el-table-column prop="name" label="姓名" width="140">
+        <el-table :data="filteredPersonList" stripe size="small" v-loading="personLoading">
+          <el-table-column prop="name" label="姓名" width="120">
             <template #default="scope">
               <span class="font-semibold text-[#1A3A5C]">{{ scope.row.name }}</span>
             </template>
           </el-table-column>
-          <el-table-column prop="role" label="角色" width="150">
+          <el-table-column prop="role" label="角色" width="130">
             <template #default="scope">
               <span
                 class="px-2 py-1 rounded text-xs font-semibold"
@@ -225,22 +349,37 @@ function resetPersonFilter() {
               </span>
             </template>
           </el-table-column>
-          <el-table-column label="涉案金额" width="150" align="right">
+          <el-table-column prop="is_authorized" label="是否授权" width="100" align="center">
             <template #default="scope">
-              <span class="font-bold text-red-600">¥{{ scope.row.amount.toLocaleString() }}</span>
+              <span class="px-2 py-1 rounded text-xs font-semibold" :style="{
+                background: scope.row.is_authorized ? '#F0FAF0' : '#FDECEA',
+                color: scope.row.is_authorized ? '#27AE60' : '#C0392B'
+              }">
+                {{ scope.row.is_authorized ? '是' : '否' }}
+              </span>
             </template>
           </el-table-column>
-          <el-table-column prop="caseCount" label="管理案件数量" width="130" align="center">
+          <el-table-column prop="subjective_knowledge_score" label="主观明知评分" width="120" align="center">
             <template #default="scope">
-              <span class="font-semibold text-[#1A3A5C]">{{ scope.row.caseCount }} 件</span>
+              <span class="font-semibold text-[#1A3A5C]">{{ scope.row.subjective_knowledge_score }}/10</span>
             </template>
           </el-table-column>
-          <el-table-column prop="phone" label="联系电话" width="140">
+          <el-table-column label="涉案金额" width="130" align="right">
             <template #default="scope">
-              <span class="font-mono text-sm text-gray-600">{{ scope.row.phone }}</span>
+              <span class="font-bold text-red-600">¥{{ scope.row.illegal_business_amount.toLocaleString() }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="120" align="center" fixed="right">
+          <el-table-column prop="linked_cases" label="管理案件数量" width="110" align="center">
+            <template #default="scope">
+              <span class="font-semibold text-[#1A3A5C]">{{ scope.row.linked_cases }} 件</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="phone" label="联系电话" width="130">
+            <template #default="scope">
+              <span class="font-mono text-sm text-gray-600">{{ maskPhone(scope.row.phone) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="100" align="center" fixed="right">
             <template #default="scope">
               <el-button link type="primary" size="small" :icon="Edit" style="color: #1A3A5C; font-weight: 600" @click="openEditDialog(scope.row)">修改</el-button>
             </template>
@@ -288,14 +427,24 @@ function resetPersonFilter() {
           </el-select>
         </div>
         <div class="flex items-center gap-4">
+          <label class="w-24 text-sm font-semibold text-gray-500">是否授权</label>
+          <el-checkbox v-model="editForm.is_authorized">授权经销商</el-checkbox>
+        </div>
+        <div class="flex items-center gap-4">
+          <label class="w-24 text-sm font-semibold text-gray-500">主观明知评分</label>
+          <el-input v-model.number="editForm.subjective_knowledge_score" type="number" min="0" max="10" placeholder="0-10分" class="flex-1">
+            <template #append>分</template>
+          </el-input>
+        </div>
+        <div class="flex items-center gap-4">
           <label class="w-24 text-sm font-semibold text-gray-500">涉案金额</label>
-          <el-input v-model.number="editForm.amount" type="number" placeholder="请输入涉案金额" class="flex-1">
+          <el-input v-model.number="editForm.illegal_business_amount" type="number" placeholder="请输入涉案金额" class="flex-1">
             <template #prepend>¥</template>
           </el-input>
         </div>
         <div class="flex items-center gap-4">
-          <label class="w-24 text-sm font-semibold text-gray-500">管理案件数量</label>
-          <el-input v-model.number="editForm.caseCount" type="number" placeholder="请输入案件数量" class="flex-1">
+          <label class="w-24 text-sm font-semibold text-gray-500">关联案件数</label>
+          <el-input v-model.number="editForm.linked_cases" type="number" placeholder="请输入案件数量" class="flex-1">
             <template #append>件</template>
           </el-input>
         </div>

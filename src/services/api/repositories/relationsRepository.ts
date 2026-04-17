@@ -7,7 +7,13 @@ export function createApiRelationsRepository(): RelationsRepository {
       return get("/relations/cross-case", { params: req });
     },
     async getUpstreamGraph(req: GetUpstreamRequest) {
-      return get(`/relations/upstream/${req.caseId}`);
+      return get(`/relations/chain/${req.caseId}`);
+    },
+    async getFundFlows() {
+      return get("/ledger/transactions");
+    },
+    async getPersonLedger() {
+      return get("/ledger/persons");
     },
   };
 }
