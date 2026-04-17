@@ -1,0 +1,177 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --color-brand: #1A3A5C;
+    --color-brand-light: #2C5282;
+    --color-brand-accent: #C0392B;
+
+    --color-ui-bg: #E8EEF4;
+    --color-ui-border: #D0D5DD;
+    --color-ui-card: #F5F8FA;
+
+    --color-serious: #C0392B;
+    --color-alert: #E67E22;
+    --color-safe: #27AE60;
+    --color-key: #7C3AED;
+    --color-info: #1A3A5C;
+    --color-fund: #F59E0B;
+
+    --color-surface: #F5F8FA;
+    --color-ground: #E8EEF4;
+    --color-border: #D0D5DD;
+    --color-border-light: #E8EEF4;
+    --color-text-primary: #1A3A5C;
+    --color-text-secondary: #2C3E50;
+    --color-text-muted: #888;
+    --color-text-inverse: #ffffff;
+
+    --font-sans: "Inter", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+      "Courier New", monospace;
+
+    --card-radius: 10px;
+    --card-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    --card-shadow-hover: 0 4px 12px rgba(26,58,92,0.12);
+    --card-shadow-panel: 0 4px 12px rgba(26,58,92,0.08);
+  }
+
+  html,
+  body,
+  #app {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--color-ui-bg);
+    color: var(--color-text-secondary);
+    font-family: var(--font-sans);
+  }
+}
+
+@layer components {
+  .app-card {
+    background: white;
+    border-radius: var(--card-radius);
+    border: 1px solid var(--color-ui-border);
+    box-shadow: var(--card-shadow);
+  }
+
+  .card-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--color-brand);
+    border-left: 4px solid var(--color-brand-accent);
+    padding-left: 12px;
+    margin-bottom: 20px;
+  }
+
+  .stat-card {
+    background: white;
+    border-radius: 10px;
+    border: 1px solid var(--color-ui-border);
+    padding: 20px 24px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    border-left: 4px solid var(--color-brand);
+    transition: all 0.2s;
+  }
+  .stat-card:hover {
+    box-shadow: 0 4px 12px rgba(26,58,92,0.12);
+    transform: translateY(-1px);
+  }
+
+  .scan-overlay {
+    background: linear-gradient(
+      180deg,
+      rgba(192,57,43,0) 0%,
+      rgba(192,57,43,0.06) 50%,
+      rgba(192,57,43,0) 100%
+    );
+    animation: scan-line 1.8s ease-in-out infinite;
+  }
+  @keyframes scan-line {
+    0% { transform: translateY(-100%); opacity: 0; }
+    15% { opacity: 1; }
+    85% { opacity: 1; }
+    100% { transform: translateY(100%); opacity: 0; }
+  }
+
+  .chat-highlight {
+    background: #fff1f0;
+    border-bottom: 2px solid var(--color-brand-accent);
+    font-weight: 600;
+    color: var(--color-brand-accent);
+  }
+  .price-highlight {
+    color: var(--color-brand-accent);
+    font-weight: 700;
+    font-size: 15px;
+  }
+
+  .tag-danger { background: #FDECEA; color: #C0392B; border: 1px solid #F5C6C2; padding: 2px 8px; border-radius: 4px; font-size: 12px; }
+  .tag-warning { background: #FDF6EC; color: #E67E22; border: 1px solid #F5D8B0; padding: 2px 8px; border-radius: 4px; font-size: 12px; }
+  .tag-info { background: #EEF3F8; color: #1A3A5C; border: 1px solid #BDD0E6; padding: 2px 8px; border-radius: 4px; font-size: 12px; }
+  .tag-purple { background: #F3F0FB; color: #7C3AED; border: 1px solid #D8B4FE; padding: 2px 8px; border-radius: 4px; font-size: 12px; }
+
+  .info-panel {
+    background: #FAFCFF;
+    border-radius: 10px;
+    border: 1px solid #BDD0E6;
+    padding: 20px;
+  }
+  .info-item {
+    display: flex;
+    justify-content: space-between;
+    padding: 10px 0;
+    border-bottom: 1px solid #EEF3F8;
+  }
+  .info-item:last-child { border-bottom: none; }
+
+  .custom-tab {
+    padding: 10px 20px;
+    font-size: 14px;
+    font-weight: 600;
+    color: #888;
+    cursor: pointer;
+    border-bottom: 3px solid transparent;
+    margin-bottom: -2px;
+    transition: all 0.2s;
+    display: inline-block;
+  }
+  .custom-tab.active {
+    color: var(--color-brand);
+    border-bottom-color: var(--color-brand-accent);
+  }
+  .custom-tab:hover { color: var(--color-brand); }
+
+  .graph-legend {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: #666;
+  }
+  .legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+  }
+
+  .table-row:hover { background-color: #F5F8FA; cursor: pointer; }
+}
+
+@layer utilities {
+  .scroll-area {
+    height: calc(100vh - 60px);
+    overflow-y: auto;
+  }
+}
