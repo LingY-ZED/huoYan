@@ -6,6 +6,9 @@ export type CaseFilter = {
   case_no?: string;
   suspect_name?: string;
   brand?: string;
+  status?: string;
+  page?: number;
+  pageSize?: number;
   limit?: number;
   offset?: number;
 };

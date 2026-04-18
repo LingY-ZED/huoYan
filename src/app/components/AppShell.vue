@@ -20,7 +20,7 @@ const expandedNav = ref<string | null>(null);
 const nav = [
   { to: "/dashboard", label: "数据看板", icon: DataBoard },
   { to: "/cases", label: "案件管理", icon: FolderOpened },
-  { to: "/evidence-list", label: "证据清单", icon: Document },
+  { to: "/evidence-list", label: "可疑线索", icon: Document },
   {
     to: "/evidence",
     label: "智能证据解析",
@@ -47,6 +47,7 @@ const nav = [
     children: [
       { to: "/ledger/person", label: "人物台账" },
       { to: "/ledger/fund", label: "资金台账" },
+      { to: "/ledger/evidence", label: "证据清单" },
       { to: "/ledger/report", label: "统计报表" },
     ],
   },
@@ -70,7 +71,7 @@ watch(
 );
 
 function isParentActive(parentPath: string) {
-  return activePath.value.startsWith(parentPath + "/");
+  return activePath.value === parentPath || activePath.value.startsWith(parentPath + "/");
 }
 
 function handleParentNavClick(parentPath: string) {

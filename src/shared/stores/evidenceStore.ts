@@ -193,7 +193,7 @@ export const useEvidenceStore = defineStore("evidence", {
 
       try {
         this.upload.progress = 30;
-        const res = await repositories.evidence.uploadFile({ file, evidenceType });
+        const res = await repositories.evidence.uploadFile(file, evidenceType);
         this.upload.progress = 80;
 
         if (res.code !== 0) {

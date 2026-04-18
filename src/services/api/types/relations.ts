@@ -19,4 +19,8 @@ export interface RelationsRepository {
   getUpstreamGraph(req: GetUpstreamRequest): Promise<GetUpstreamResponse>;
   getFundFlows(): Promise<any>;
   getPersonLedger(): Promise<any>;
+  getRecidivism(personName: string): Promise<any>;
+  getUpstreamList(caseId: string | number): Promise<any>;
+  getDownstreamList(caseId: string | number): Promise<any>;
+  getCoreSuspectsList(caseId: string | number): Promise<any>;
 }

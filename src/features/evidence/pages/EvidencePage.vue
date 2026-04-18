@@ -4,7 +4,9 @@ import { useRoute, useRouter } from "vue-router";
 import { ElButton, ElInput, ElTable, ElTableColumn, ElMessage, ElProgress, ElAlert, ElSelect, ElOption, ElLoading } from "element-plus";
 import { Cpu, Document, Connection, Upload, Money, Van } from "@element-plus/icons-vue";
 import { useEvidenceStore } from "@/shared/stores/evidenceStore";
+import { useReportStore } from "@/shared/stores/reportStore";
 import { repositories } from "@/services";
+import { post } from "@/services/api/client";
 
 const route = useRoute();
 const router = useRouter();
@@ -41,11 +43,15 @@ async function loadCases() {
       limit: 100,
       offset: 0,
     });
-    if (response.code === 0) {
-      caseOptions.value = response.data!.list.map(c => ({
-        value: c.id,
-        label: `${c.id} - ${c.suspect_name}`
-      }));
+    const list = Array.isArray(response) ? response : ((response as any)?.list || (response as any)?.data?.list || []);
+    
+    caseOptions.value = list.map((c: any) => ({
+      value: c.id,
+      label: `${c.case_no} - ${c.suspect_name || '未知嫌疑人'}`
+    }));
+    
+    if (caseOptions.value.length > 0 && !selectedCaseId.value) {
+      selectedCaseId.value = caseOptions.value[0].value;
     }
   } catch (error) {
     console.error('加载案件列表失败:', error);
@@ -67,28 +73,43 @@ const sampleChat = `刘某某: 老曹，刚到一批轮毂。
 
 function loadSample() {
   store.rawText = sampleChat;
+  analysisDone.value = false;
+  analysisResult.value = null;
   store.reset();
   store.resetUpload();
 }
 
 function clearChatInput() {
   store.rawText = "";
+  analysisDone.value = false;
+  analysisResult.value = null;
   store.reset();
   store.resetUpload();
 }
 
 const isAnalyzing = ref(false);
+const reportStore = useReportStore();
+
+const lastReportUrl = computed(() => {
+  const caseId = selectedCaseId.value || (caseOptions.value.length > 0 ? caseOptions.value[0].value : "");
+  if (!caseId) return "";
+  return reportStore.getReport(caseId)?.url || "";
+});
+
+const lastReportName = computed(() => {
+  const caseId = selectedCaseId.value || (caseOptions.value.length > 0 ? caseOptions.value[0].value : "");
+  if (!caseId) return "";
+  return reportStore.getReport(caseId)?.name || "";
+});
 const analysisDone = ref(false);
 const analysisResult = ref<any>(null);
 const analysisError = ref<string | null>(null);
 
 const isTransferAnalyzing = ref(false);
 const transferAnalysisDone = ref(false);
-const transferResult = ref<any>(null);
 
 const isLogisticsAnalyzing = ref(false);
 const logisticsAnalysisDone = ref(false);
-const logisticsResult = ref<any>(null);
 
 const isUploading = computed(() => store.upload.status === "uploading");
 const uploadDone = computed(() => store.upload.status === "success");
@@ -99,43 +120,76 @@ const uploadedRawText = computed(() => store.upload.rawText);
 
 // 智能分析接口调用
 async function startAnalysis() {
-  if (!store.rawText.trim()) {
-    ElMessage.warning("请先粘贴聊天记录或上传 CSV 文件");
+  const currentText = evidenceTab.value === 'chat' ? store.rawText : 
+                     evidenceTab.value === 'transfer' ? transferInput.value : 
+                     logisticsInput.value;
+
+  if (!currentText.trim()) {
+    ElMessage.warning(`请先输入或上传${evidenceTab.value === 'chat' ? '谈话' : evidenceTab.value === 'transfer' ? '转账' : '物流'}记录`);
     return;
   }
   
-  isAnalyzing.value = true;
-  analysisError.value = null;
-  
-  const loading = ElLoading.service({ fullscreen: true, text: '正在分析证据...' });
+  const loading = ElLoading.service({ fullscreen: true, text: '正在通过 AI 解析法律线索...' });
   
   try {
-    const response = await fetch('http://localhost:8000/api/analyze/evidence', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        evidence_text: store.rawText,
-        evidence_type: evidenceType.value
-      }),
+    console.log("Sending analysis request:", {
+      evidence_text: currentText,
+      evidence_type: evidenceType.value,
+      case_id: selectedCaseId.value || undefined
     });
     
-    if (!response.ok) {
-      throw new Error('分析失败');
-    }
+    const res = await repositories.evidence.analyzeEvidence({
+      evidence_text: currentText,
+      evidence_type: evidenceType.value,
+      case_id: selectedCaseId.value || undefined
+    });
     
-    const data = await response.json();
+    console.log("Analysis response received:", res);
+    
+    // 后端返回的数据可能在 res.data 中，也可能直接在 res 中，取决于 client 的处理
+    const rawData = res.data || res;
+    
+    // 字段映射适配：将后端实际返回字段映射到前端模板使用的字段
+    const data = {
+      ...rawData,
+      // 1. 价格分析映射
+      price_analysis: rawData.price_analysis || (rawData.price_anomaly ? {
+        is_anomaly: rawData.price_anomaly.is_anomaly,
+        price_ratio: rawData.price_anomaly.price_ratio,
+        suggestion: rawData.price_anomaly.suggestion
+      } : null),
+      
+      // 2. 主观明知映射
+      subjective_knowledge: rawData.subjective_knowledge ? {
+        ...rawData.subjective_knowledge,
+        category_counts: rawData.subjective_knowledge.categories || rawData.subjective_knowledge.category_counts || {}
+      } : null,
+      
+      // 3. 关键主体映射
+      key_entities: rawData.key_entities || (rawData.key_actors ? {
+        names: rawData.key_actors.map((a: any) => a.name),
+        roles: rawData.key_actors.map((a: any) => a.role),
+        contacts: [],
+        amounts: []
+      } : { names: [], roles: [], contacts: [], amounts: [] }),
+      
+      // 4. 罪名映射 (如果后端在 subjective_knowledge 内部返回)
+      crime_type: rawData.crime_type || rawData.subjective_knowledge?.crime_type
+    };
+
     analysisResult.value = data;
     analysisDone.value = true;
     
-    ElMessage.success('分析完成');
+    // 同步更新各子页面的状态
+    if (evidenceTab.value === 'transfer') transferAnalysisDone.value = true;
+    if (evidenceTab.value === 'logistics') logisticsAnalysisDone.value = true;
+
+    ElMessage.success('AI 解析完成');
   } catch (error) {
     analysisError.value = '分析失败，请稍后重试';
     console.error('分析失败:', error);
     ElMessage.error('分析失败，请稍后重试');
   } finally {
-    isAnalyzing.value = false;
     loading.close();
   }
 }
@@ -148,8 +202,39 @@ function scrollToEvidence(evidenceId: string) {
   setTimeout(() => el.classList.remove("evidence-highlight"), 2000);
 }
 
+// 高亮原始文本中的关键词
+const highlightedText = computed(() => {
+  const currentText = evidenceTab.value === 'chat' ? store.rawText : 
+                     evidenceTab.value === 'transfer' ? transferInput.value : 
+                     logisticsInput.value;
+
+  if (!currentText) return "";
+  let text = currentText.replace(/\n/g, '<br/>');
+  
+  const keywords = analysisResult.value?.subjective_knowledge?.hit_keywords || [];
+  if (keywords.length === 0) return text;
+
+  // 按长度降序排列，避免子串冲突
+  const sortedKeywords = [...new Set(keywords)].sort((a: string, b: string) => b.length - a.length);
+  
+  sortedKeywords.forEach((kw: string) => {
+    if (!kw) return;
+    const regex = new RegExp(`(${kw})`, 'gi');
+    text = text.replace(regex, '<mark class="bg-yellow-200 text-red-600 px-0.5 rounded font-bold">$1</mark>');
+  });
+  
+  return text;
+});
+
 function gotoRelations() {
-  router.push("/relations");
+  if (!selectedCaseId.value) {
+    ElMessage.warning("请先选择案件");
+    return;
+  }
+  router.push({
+    path: "/relations",
+    query: { caseId: selectedCaseId.value }
+  });
 }
 
 const transferInput = ref("");
@@ -157,67 +242,22 @@ const logisticsInput = ref("");
 
 function loadTransferSample() {
   transferInput.value = sampleTransfer;
+  transferAnalysisDone.value = false;
+  analysisResult.value = null;
   store.resetTransfer();
   store.resetUpload();
 }
 
 function clearTransferInput() {
   transferInput.value = "";
+  transferAnalysisDone.value = false;
+  analysisResult.value = null;
   store.resetTransfer();
   store.resetUpload();
 }
 
 async function startTransferAnalysis() {
-  if (!transferInput.value.trim()) {
-    ElMessage.warning("请先粘贴转账记录或上传 CSV 文件");
-    return;
-  }
-  
-  isTransferAnalyzing.value = true;
-  
-  try {
-    // 解析输入的转账记录
-    const records = transferInput.value.trim().split('\n').map(line => {
-      const parts = line.split('|').map(part => part.trim());
-      if (parts.length >= 4) {
-        return {
-          payer: parts[0],
-          payee: parts[1],
-          amount: parseFloat(parts[2]) || 0,
-          time: parts[3],
-          channel: parts[4] || '',
-          caseId: selectedCaseId.value
-        };
-      }
-      return null;
-    }).filter((record): record is any => record !== null);
-    
-    if (records.length === 0) {
-      ElMessage.warning("请输入有效的转账记录");
-      return;
-    }
-    
-    const response = await repositories.evidence.analyzeTransfer({ records });
-    
-    if (response.code === 0) {
-      // 标准格式的情况
-      transferResult.value = response.data;
-      transferAnalysisDone.value = true;
-    } else if (response) {
-      // 直接返回数据的情况
-      transferResult.value = response;
-      transferAnalysisDone.value = true;
-    } else {
-      throw new Error('分析失败');
-    }
-    
-    ElMessage.success('分析完成');
-  } catch (error) {
-    ElMessage.error('分析失败，请稍后重试');
-    console.error('分析失败:', error);
-  } finally {
-    isTransferAnalyzing.value = false;
-  }
+  await startAnalysis();
 }
 
 const sampleTransfer = `曹某某 | 刘某某 | 20200 | 2024-03-10 14:32 | 银行转账
@@ -227,67 +267,22 @@ const sampleTransfer = `曹某某 | 刘某某 | 20200 | 2024-03-10 14:32 | 银�
 
 function loadLogisticsSample() {
   logisticsInput.value = sampleLogistics;
+  logisticsAnalysisDone.value = false;
+  analysisResult.value = null;
   store.resetLogistics();
   store.resetUpload();
 }
 
 function clearLogisticsInput() {
   logisticsInput.value = "";
+  logisticsAnalysisDone.value = false;
+  analysisResult.value = null;
   store.resetLogistics();
   store.resetUpload();
 }
 
 async function startLogisticsAnalysis() {
-  if (!logisticsInput.value.trim()) {
-    ElMessage.warning("请先粘贴物流记录或上传 CSV 文件");
-    return;
-  }
-  
-  isLogisticsAnalyzing.value = true;
-  
-  try {
-    // 解析输入的物流记录
-    const records = logisticsInput.value.trim().split('\n').map(line => {
-      const parts = line.split('|').map(part => part.trim());
-      if (parts.length >= 4) {
-        return {
-          expressNo: parts[0],
-          sender: parts[1],
-          receiver: parts[2],
-          time: parts[3],
-          channel: parts[4] || '',
-          caseId: selectedCaseId.value
-        };
-      }
-      return null;
-    }).filter((record): record is any => record !== null);
-    
-    if (records.length === 0) {
-      ElMessage.warning("请输入有效的物流记录");
-      return;
-    }
-    
-    const response = await repositories.evidence.analyzeLogistics({ records });
-    
-    if (response.code === 0) {
-      // 标准格式的情况
-      logisticsResult.value = response.data;
-      logisticsAnalysisDone.value = true;
-    } else if (response) {
-      // 直接返回数据的情况
-      logisticsResult.value = response;
-      logisticsAnalysisDone.value = true;
-    } else {
-      throw new Error('分析失败');
-    }
-    
-    ElMessage.success('分析完成');
-  } catch (error) {
-    ElMessage.error('分析失败，请稍后重试');
-    console.error('分析失败:', error);
-  } finally {
-    isLogisticsAnalyzing.value = false;
-  }
+  await startAnalysis();
 }
 
 const sampleLogistics = `SF1234567890 | 刘某某 | 曹某某 | 2024-03-10 14:32 | 顺丰速运
@@ -375,28 +370,32 @@ async function generateReport() {
   const loading = ElLoading.service({ fullscreen: true, text: '正在生成报告...' });
   
   try {
-    const response = await fetch('http://localhost:8000/api/report/generate', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        case_id: selectedCaseId.value || 1
-      }),
-    });
+    const caseId = Number(selectedCaseId.value || (caseOptions.value.length > 0 ? caseOptions.value[0].value : 1));
+    const res = await post<any>('/report/generate', null, { params: { case_id: caseId } });
+    const data = res?.data || res;
     
-    if (!response.ok) {
-      throw new Error('报告生成失败');
+    if (data?.success || data?.report_id) {
+      ElMessage.success(data.message || "报告生成成功！");
+      reportStore.setReport(caseId, data.download_url, data.report_id);
+    } else {
+      throw new Error(data?.message || '报告生成失败');
     }
-    
-    const data = await response.json();
-    ElMessage.success('报告生成成功');
-    console.log('报告生成结果:', data);
   } catch (error) {
-    ElMessage.error('报告生成失败，请稍后重试');
     console.error('报告生成失败:', error);
+    ElMessage.error('报告生成失败，请确认已选择案件');
   } finally {
     loading.close();
+  }
+}
+
+function downloadLastReport() {
+  if (lastReportUrl.value) {
+    const link = document.createElement('a');
+    link.href = lastReportUrl.value;
+    link.setAttribute('download', lastReportName.value || 'report.txt');
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   }
 }
 </script>
@@ -530,12 +529,39 @@ async function generateReport() {
 
           <div v-else class="space-y-4">
             <div
+              v-if="analysisResult?.subjective_knowledge?.score > 5 || analysisResult?.price_analysis?.is_anomaly"
               class="app-card p-4"
               style="border: 1px solid #F5C6C2; background: #FDECEA"
             >
               <div class="font-semibold" style="color: #C0392B">
-                🔴 检测到疑似侵权法律特征
+                🔴 检测到高风险疑似侵权特征
               </div>
+            </div>
+            <div
+              v-else
+              class="app-card p-4"
+              style="border: 1px solid #A8D8A8; background: #F0FAF0"
+            >
+              <div class="font-semibold" style="color: #27AE60">
+                🟢 未检测到显著侵权特征
+              </div>
+            </div>
+
+            <!-- 证据出处与高亮解析 -->
+            <div class="app-card p-5">
+              <div class="flex items-center justify-between mb-3">
+                <div class="flex items-center gap-2">
+                  <span class="text-lg">🔍</span>
+                  <h4 class="font-bold text-sm" style="color: #1A3A5C">证据出处与高亮解析</h4>
+                </div>
+                <div class="text-[10px] px-2 py-0.5 rounded bg-yellow-50 text-yellow-700 border border-yellow-100">
+                  命中关键词已高亮
+                </div>
+              </div>
+              <div 
+                class="p-4 rounded-lg text-xs leading-relaxed max-h-[200px] overflow-y-auto bg-slate-50 border border-slate-100 font-mono"
+                v-html="highlightedText"
+              ></div>
             </div>
 
             <!-- 价格异常判定 -->
@@ -747,34 +773,43 @@ async function generateReport() {
 
             <el-button
               type="primary"
-              class="w-full mt-3 h-12 text-base font-bold"
+              class="w-full mt-4 h-12 text-base font-bold"
               style="background: #1A3A5C; border-color: #1A3A5C"
               :loading="isTransferAnalyzing"
               @click="startTransferAnalysis"
             >
-              🚀 开始解析
+              🚀 开始 AI 法律线索提取
             </el-button>
 
-            <div v-if="transferAnalysisDone" class="space-y-3 mt-4">
-              <div class="flex gap-4">
-                <el-button
-                  type="primary"
-                  :icon="Document"
-                  class="flex-1 h-10 font-semibold"
-                  style="background: #1A3A5C; border-color: #1A3A5C"
-                  @click="syncToLedger"
-                >
-                  同步至证据清单
-                </el-button>
-                <el-button
-                  :icon="Connection"
-                  class="flex-1 h-10 font-semibold"
-                  style="color: #1A3A5C; border-color: #1A3A5C"
-                  @click="gotoRelations"
-                >
-                  转入关联图谱分析
-                </el-button>
-              </div>
+            <div v-if="transferAnalysisDone" class="flex gap-4 mt-4">
+              <el-button
+                v-if="!lastReportUrl"
+                type="primary"
+                :icon="Document"
+                class="flex-1 h-10 font-semibold"
+                style="background: #1A3A5C; border-color: #1A3A5C"
+                @click="generateReport"
+              >
+                生成初步分析报告
+              </el-button>
+              <el-button
+                v-else
+                type="success"
+                :icon="Download"
+                class="flex-1 h-10 font-semibold"
+                style="background: #27AE60; border-color: #27AE60"
+                @click="downloadLastReport"
+              >
+                下载分析报告
+              </el-button>
+              <el-button
+                :icon="Connection"
+                class="flex-1 h-10 font-semibold"
+                style="color: #1A3A5C; border-color: #1A3A5C"
+                @click="gotoRelations"
+              >
+                转入关联图谱分析
+              </el-button>
             </div>
           </div>
         </div>
@@ -791,50 +826,62 @@ async function generateReport() {
           </div>
 
           <div v-else class="space-y-4">
-            <div class="grid grid-cols-3 gap-4">
-              <div class="app-card text-center p-4">
-                <p class="text-xs font-semibold mb-1" style="color: #888">💰 总涉案金额</p>
-                <p class="text-3xl font-black" style="color: #F59E0B">¥{{ transferResult?.totalAmount.toLocaleString() }}</p>
-                <p class="text-xs" style="color: #aaa">元</p>
-              </div>
-              <div class="app-card text-center p-4">
-                <p class="text-xs font-semibold mb-1" style="color: #888">📊 交易笔数</p>
-                <p class="text-3xl font-black" style="color: #1A3A5C">{{ transferResult?.transactionCount }}</p>
-                <p class="text-xs" style="color: #aaa">笔</p>
-              </div>
-              <div class="app-card text-center p-4">
-                <p class="text-xs font-semibold mb-1" style="color: #888">👥 涉案人员</p>
-                <p class="text-3xl font-black" style="color: #1A3A5C">{{ transferResult?.personCount }}</p>
-                <p class="text-xs" style="color: #aaa">人</p>
+            <!-- 动态解析状态 -->
+            <div 
+              class="app-card p-4" 
+              :style="analysisResult?.price_analysis?.is_anomaly || (analysisResult?.subjective_knowledge?.score || 0) > 5 ? 'border: 1px solid #F5C6C2; background: #FDECEA' : 'border: 1px solid #A8D8A8; background: #F0FAF0'"
+            >
+              <div class="font-semibold" :style="analysisResult?.price_analysis?.is_anomaly || (analysisResult?.subjective_knowledge?.score || 0) > 5 ? 'color: #C0392B' : 'color: #27AE60'">
+                {{ analysisResult?.price_analysis?.is_anomaly || (analysisResult?.subjective_knowledge?.score || 0) > 5 ? '🔴 检测到疑似侵权法律特征' : '🟢 未检测到显著侵权特征' }}
               </div>
             </div>
 
+            <!-- 证据出处与高亮解析 -->
             <div class="app-card p-5">
-              <div class="flex items-center gap-2 mb-3">
-                <span class="text-lg">🏆</span>
-                <h4 class="font-bold text-sm" style="color: #1A3A5C">高频交易对手 TOP{{ transferResult?.topCounterparties.length }}</h4>
+              <div class="flex items-center justify-between mb-3">
+                <div class="flex items-center gap-2">
+                  <span class="text-lg">🔍</span>
+                  <h4 class="font-bold text-sm" style="color: #1A3A5C">数据源高亮解析</h4>
+                </div>
               </div>
-              <div class="space-y-2">
-                <div
-                  v-for="(item, idx) in transferResult?.topCounterparties ?? []"
-                  :key="idx"
-                  class="flex items-center gap-3"
-                >
-                  <span
-                    class="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold"
-                    :class="idx === 0 ? 'bg-amber-500 text-white' : idx === 1 ? 'bg-gray-400 text-white' : 'bg-amber-700 text-white'"
-                  >
-                    {{ idx + 1 }}
-                  </span>
-                  <span class="font-semibold text-sm" style="color: #1A3A5C">{{ item.name }}</span>
-                  <div class="flex-1 h-2 rounded-full bg-gray-200">
-                    <div
-                      class="h-full rounded-full"
-                      :class="idx === 0 ? 'bg-amber-500' : 'bg-[#1A3A5C]'"
-                      :style="'width:' + item.percent + '%'"
-                    />
-                  </div>
-                  <span class="text-sm font-bold" style="color: #F59E0B">¥{{ item.amount.toLocaleString() }}</span>
+              <div class="p-4 rounded-lg text-xs leading-relaxed max-h-[150px] overflow-y-auto bg-slate-50 border border-slate-100 font-mono" v-html="highlightedText"></div>
+            </div>
+
+            <div v-if="analysisResult?.price_analysis" class="app-card p-5">
+              <div class="flex items-center gap-2 mb-3">
+                <span class="text-lg">🔴</span>
+                <h4 class="font-bold text-sm" style="color: #1A3A5C">价格异常判定</h4>
+              </div>
+              <div class="p-3 rounded-lg text-sm" style="background: #FDECEA; border: 1px solid #F5C6C2">
+                <p>{{ analysisResult.price_analysis.is_anomaly ? '价格异常' : '价格正常' }}</p>
+                <p class="mt-1 text-xs" style="color: #888">{{ analysisResult.price_analysis.suggestion }}</p>
+              </div>
+            </div>
+
+            <div v-if="analysisResult?.subjective_knowledge" class="app-card p-5">
+              <div class="flex items-center gap-2 mb-3">
+                <span class="text-lg">🔴</span>
+                <h4 class="font-bold text-sm" style="color: #1A3A5C">主观明知特征</h4>
+              </div>
+              <div class="p-3 rounded-lg text-sm bg-slate-50 border border-slate-100">
+                <p class="font-bold mb-1">主观明知评分: {{ analysisResult.subjective_knowledge.score }}/10</p>
+                <p class="text-xs text-slate-500">命中关键词: {{ (analysisResult.subjective_knowledge.hit_keywords || []).join(', ') }}</p>
+              </div>
+            </div>
+
+            <div v-if="analysisResult?.key_entities" class="app-card p-5">
+              <div class="flex items-center gap-2 mb-3">
+                <span class="text-lg">🟡</span>
+                <h4 class="font-bold text-sm" style="color: #1A3A5C">关键主体提取</h4>
+              </div>
+              <div class="grid grid-cols-2 gap-2">
+                <div class="p-2 rounded bg-blue-50 border border-blue-100">
+                  <p class="text-[10px] font-bold text-blue-700">人员/角色</p>
+                  <p class="text-xs">{{ (analysisResult.key_entities.names || []).concat(analysisResult.key_entities.roles || []).join(', ') }}</p>
+                </div>
+                <div class="p-2 rounded bg-green-50 border border-green-100">
+                  <p class="text-[10px] font-bold text-green-700">联系方式</p>
+                  <p class="text-xs">{{ (analysisResult.key_entities.contacts || []).join(', ') }}</p>
                 </div>
               </div>
             </div>
@@ -936,34 +983,43 @@ async function generateReport() {
 
             <el-button
               type="primary"
-              class="w-full mt-3 h-12 text-base font-bold"
+              class="w-full mt-4 h-12 text-base font-bold"
               style="background: #1A3A5C; border-color: #1A3A5C"
               :loading="isLogisticsAnalyzing"
               @click="startLogisticsAnalysis"
             >
-              🚀 开始解析
+              🚀 开始 AI 法律线索提取
             </el-button>
 
-            <div v-if="logisticsAnalysisDone" class="space-y-3 mt-4">
-              <div class="flex gap-4">
-                <el-button
-                  type="primary"
-                  :icon="Document"
-                  class="flex-1 h-10 font-semibold"
-                  style="background: #1A3A5C; border-color: #1A3A5C"
-                  @click="syncToLedger"
-                >
-                  同步至证据清单
-                </el-button>
-                <el-button
-                  :icon="Connection"
-                  class="flex-1 h-10 font-semibold"
-                  style="color: #1A3A5C; border-color: #1A3A5C"
-                  @click="gotoRelations"
-                >
-                  转入关联图谱分析
-                </el-button>
-              </div>
+            <div v-if="logisticsAnalysisDone" class="flex gap-4 mt-4">
+              <el-button
+                v-if="!lastReportUrl"
+                type="primary"
+                :icon="Document"
+                class="flex-1 h-10 font-semibold"
+                style="background: #1A3A5C; border-color: #1A3A5C"
+                @click="generateReport"
+              >
+                生成初步分析报告
+              </el-button>
+              <el-button
+                v-else
+                type="success"
+                :icon="Download"
+                class="flex-1 h-10 font-semibold"
+                style="background: #27AE60; border-color: #27AE60"
+                @click="downloadLastReport"
+              >
+                下载分析报告
+              </el-button>
+              <el-button
+                :icon="Connection"
+                class="flex-1 h-10 font-semibold"
+                style="color: #1A3A5C; border-color: #1A3A5C"
+                @click="gotoRelations"
+              >
+                转入关联图谱分析
+              </el-button>
             </div>
           </div>
         </div>
@@ -980,50 +1036,47 @@ async function generateReport() {
           </div>
 
           <div v-else class="space-y-4">
-            <div class="grid grid-cols-3 gap-4">
-              <div class="app-card text-center p-4">
-                <p class="text-xs font-semibold mb-1" style="color: #888">📦 包裹总数</p>
-                <p class="text-3xl font-black" style="color: #1A3A5C">{{ logisticsResult?.totalPackages }}</p>
-                <p class="text-xs" style="color: #aaa">件</p>
-              </div>
-              <div class="app-card text-center p-4">
-                <p class="text-xs font-semibold mb-1" style="color: #888">📤 发件人</p>
-                <p class="text-3xl font-black" style="color: #1A3A5C">{{ logisticsResult?.senderCount }}</p>
-                <p class="text-xs" style="color: #aaa">人</p>
-              </div>
-              <div class="app-card text-center p-4">
-                <p class="text-xs font-semibold mb-1" style="color: #888">📥 收件人</p>
-                <p class="text-3xl font-black" style="color: #1A3A5C">{{ logisticsResult?.receiverCount }}</p>
-                <p class="text-xs" style="color: #aaa">人</p>
+            <!-- 动态解析状态 -->
+            <div 
+              class="app-card p-4" 
+              :style="(analysisResult?.subjective_knowledge?.score || 0) > 5 ? 'border: 1px solid #F5C6C2; background: #FDECEA' : 'border: 1px solid #A8D8A8; background: #F0FAF0'"
+            >
+              <div class="font-semibold" :style="(analysisResult?.subjective_knowledge?.score || 0) > 5 ? 'color: #C0392B' : 'color: #27AE60'">
+                {{ (analysisResult?.subjective_knowledge?.score || 0) > 5 ? '🔴 检测到疑似侵权法律特征' : '🟢 未检测到显著侵权特征' }}
               </div>
             </div>
 
+            <!-- 证据出处与高亮解析 -->
             <div class="app-card p-5">
+              <div class="flex items-center justify-between mb-3">
+                <div class="flex items-center gap-2">
+                  <span class="text-lg">🔍</span>
+                  <h4 class="font-bold text-sm" style="color: #1A3A5C">数据源高亮解析</h4>
+                </div>
+              </div>
+              <div class="p-4 rounded-lg text-xs leading-relaxed max-h-[150px] overflow-y-auto bg-slate-50 border border-slate-100 font-mono" v-html="highlightedText"></div>
+            </div>
+
+            <div v-if="analysisResult?.price_analysis" class="app-card p-5">
               <div class="flex items-center gap-2 mb-3">
-                <span class="text-lg">🏆</span>
-                <h4 class="font-bold text-sm" style="color: #1A3A5C">高频发件人 TOP{{ logisticsResult?.topSenders.length }}</h4>
+                <span class="text-lg">🔴</span>
+                <h4 class="font-bold text-sm" style="color: #1A3A5C">价格异常判定</h4>
+              </div>
+              <div class="p-3 rounded-lg text-sm" style="background: #FDECEA; border: 1px solid #F5C6C2">
+                <p>{{ analysisResult.price_analysis.is_anomaly ? '价格异常' : '价格正常' }}</p>
+                <p class="mt-1 text-xs" style="color: #888">{{ analysisResult.price_analysis.suggestion }}</p>
+              </div>
+            </div>
+
+            <div v-if="analysisResult?.key_entities" class="app-card p-5">
+              <div class="flex items-center gap-2 mb-3">
+                <span class="text-lg">🟡</span>
+                <h4 class="font-bold text-sm" style="color: #1A3A5C">关键主体提取</h4>
               </div>
               <div class="space-y-2">
-                <div
-                  v-for="(item, idx) in logisticsResult?.topSenders ?? []"
-                  :key="idx"
-                  class="flex items-center gap-3"
-                >
-                  <span
-                    class="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold"
-                    :class="idx === 0 ? 'bg-amber-500 text-white' : idx === 1 ? 'bg-gray-400 text-white' : 'bg-amber-700 text-white'"
-                  >
-                    {{ idx + 1 }}
-                  </span>
-                  <span class="font-semibold text-sm" style="color: #1A3A5C">{{ item.name }}</span>
-                  <div class="flex-1 h-2 rounded-full bg-gray-200">
-                    <div
-                      class="h-full rounded-full"
-                      :class="idx === 0 ? 'bg-amber-500' : 'bg-[#1A3A5C]'"
-                      :style="'width:' + item.percent + '%'"
-                    />
-                  </div>
-                  <span class="text-sm font-bold" style="color: #1A3A5C">{{ item.count }} 件</span>
+                <div class="p-2 rounded bg-blue-50 border border-blue-100">
+                  <p class="text-[10px] font-bold text-blue-700">物流相关主体</p>
+                  <p class="text-xs">{{ (analysisResult.key_entities.names || []).join(', ') }}</p>
                 </div>
               </div>
             </div>

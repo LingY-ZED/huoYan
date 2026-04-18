@@ -1,197 +1,206 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from "vue";
-import { ElButton, ElTable, ElTableColumn, ElInput, ElSelect, ElOption, ElTag, ElMessage, ElMessageBox } from "element-plus";
-import { Search, Download, Upload, CircleCheck } from "@element-plus/icons-vue";
-import { StatCard, PrimaryButton } from "@/shared/components";
+import { ElButton, ElTable, ElTableColumn, ElInput, ElSelect, ElOption, ElMessage } from "element-plus";
+import { Search, Download, Upload } from "@element-plus/icons-vue";
 import { repositories } from "@/services";
+import { maskName } from "@/utils/masking";
 
 const searchText = ref("");
 const filterType = ref("");
-const filterStatus = ref("");
-
-// 加载状态
 const loading = ref(false);
 
-// 线索数据类型（与后端保持一致）
-interface ClueItem {
-  id: number;
-  case_id: number;
-  clue_type: string;
-  evidence_text: string;
-  hit_keywords: string;
-  score: number;
-  crime_type: string;
-  severity_level: string;
-}
+const cluesList = ref<any[]>([]);
+const stats = ref({
+  high_risk: 0,
+  medium_risk: 0,
+  low_risk: 0,
+});
 
-const clueList = ref<ClueItem[]>([]);
-
-// 加载线索数据
+// 加载可疑线索数据
 async function loadClues() {
   loading.value = true;
   try {
-    // 这里暂时使用一个示例案件ID，实际应该从路由参数或用户选择中获取
-    const caseId = "1";
-    const response = await repositories.cases.getCaseSuspicious(caseId);
+    const caseId = "4"; // 默认演示案件
+    const response = await repositories.cases.getSuspiciousClues(caseId);
     
-    if (Array.isArray(response)) {
-      clueList.value = response;
-    } else if (response.code === 0) {
-      clueList.value = response.data || [];
-    }
+    // 后端返回的是字典 { suspicion_clues: [], price_clues: [], role_clues: [] }
+    const data = (response as any).data || response;
+    
+    const suspicion = data.suspicion_clues || [];
+    const price = data.price_clues || [];
+    const role = data.role_clues || [];
+    
+    cluesList.value = [...suspicion, ...price, ...role];
+    
+    // 统计逻辑保持不变，但现在基于合并后的列表
+    stats.value = {
+      high_risk: cluesList.value.filter(c => c.severity_level === '刑事犯罪' || c.score >= 8).length,
+      medium_risk: cluesList.value.filter(c => c.score >= 5 && c.score < 8).length,
+      low_risk: cluesList.value.filter(c => c.score < 5).length,
+    };
   } catch (error) {
-    ElMessage.error("获取线索列表失败，请稍后重试");
-    console.error("获取线索列表失败:", error);
+    ElMessage.error("获取可疑线索失败");
+    console.error("获取可疑线索失败:", error);
   } finally {
     loading.value = false;
   }
 }
 
-// 查看线索详情
-async function viewClueDetail(clueId: number) {
-  try {
-    const response = await repositories.cases.getClueDetail(clueId.toString());
-    if (response.code === 0) {
-      // 这里可以显示线索详情弹窗
-      console.log("线索详情:", response.data);
-      ElMessage.info(`查看线索详情：${clueId}`);
-    } else if (response) {
-      console.log("线索详情:", response);
-      ElMessage.info(`查看线索详情：${clueId}`);
-    }
-  } catch (error) {
-    ElMessage.error("获取线索详情失败，请稍后重试");
-    console.error("获取线索详情失败:", error);
-  }
-}
-
 const filteredList = computed(() => {
-  return clueList.value.filter((item) => {
+  return cluesList.value.filter((item) => {
     const matchSearch = !searchText.value ||
-      item.id.toString().includes(searchText.value) ||
       item.evidence_text.includes(searchText.value) ||
-      item.hit_keywords.includes(searchText.value);
+      (item.clue_type || '').includes(searchText.value) ||
+      (item.crime_type || '').includes(searchText.value);
     const matchType = !filterType.value || item.clue_type === filterType.value;
-    const matchStatus = !filterStatus.value || item.severity_level === filterStatus.value;
-    return matchSearch && matchType && matchStatus;
+    return matchSearch && matchType;
   });
 });
-
-const totalCount = computed(() => clueList.value.length);
-const severeCount = computed(() => clueList.value.filter((item) => item.severity_level === "刑事犯罪").length);
-const mediumCount = computed(() => clueList.value.filter((item) => item.severity_level === "民事侵权").length);
-
-function getSeverityTag(severity: string) {
-  const map: Record<string, "success" | "warning" | "info" | "danger"> = {
-    "刑事犯罪": "danger",
-    "民事侵权": "warning",
-    "行政违法": "info",
-  };
-  return map[severity] || "info";
-}
-
-function getClueTypeTag(type: string) {
-  const map: Record<string, "success" | "warning" | "info" | "danger"> = {
-    "主观明知": "danger",
-    "价格异常": "warning",
-    "角色异常": "info",
-  };
-  return map[type] || "info";
-}
-
-function exportList() {
-  ElMessage.success("线索清单导出中...");
-}
-
-function goToUpload() {
-  window.location.href = "/evidence";
-}
-
-function handleAudit() {
-  ElMessage.info("审核功能开发中...");
-}
 
 function resetFilter() {
   searchText.value = "";
   filterType.value = "";
-  filterStatus.value = "";
 }
 
-// 组件挂载时加载数据
 onMounted(() => {
   loadClues();
 });
 </script>
 
 <template>
-  <div class="space-y-5">
-    <div class="app-card p-5">
-      <div class="flex justify-between items-center">
-        <div class="flex items-center gap-4">
-          <div class="card-title !mb-0">📄 线索清单管理</div>
-          <span class="text-sm text-gray-500">共 {{ filteredList.length }} 条记录</span>
+  <div class="space-y-6">
+    <!-- 顶部统计模块 -->
+    <div class="grid grid-cols-4 gap-6 mb-6">
+      <div class="app-card flex flex-col items-center justify-center p-6 shadow-sm">
+        <div class="flex items-center gap-2 mb-3">
+          <span class="text-red-600">🚨</span>
+          <span class="text-xs font-bold text-gray-500">高风险线索</span>
+        </div>
+        <p class="text-4xl font-black text-red-600 mb-1">{{ stats.high_risk }}</p>
+        <p class="text-xs text-gray-400">条</p>
+      </div>
+      <div class="app-card flex flex-col items-center justify-center p-6 shadow-sm">
+        <div class="flex items-center gap-2 mb-3">
+          <span class="text-orange-500">⚠️</span>
+          <span class="text-xs font-bold text-gray-500">中风险线索</span>
+        </div>
+        <p class="text-4xl font-black text-orange-600 mb-1">{{ stats.medium_risk }}</p>
+        <p class="text-xs text-gray-400">条</p>
+      </div>
+      <div class="app-card flex flex-col items-center justify-center p-6 shadow-sm">
+        <div class="flex items-center gap-2 mb-3">
+          <span class="text-blue-500">🔍</span>
+          <span class="text-xs font-bold text-gray-500">待核查线索</span>
+        </div>
+        <p class="text-4xl font-black text-blue-600 mb-1">{{ stats.low_risk }}</p>
+        <p class="text-xs text-gray-400">条</p>
+      </div>
+      <div class="app-card flex flex-col items-center justify-center p-6 shadow-sm">
+        <div class="flex items-center gap-2 mb-3">
+          <span class="text-[#1A3A5C]">📋</span>
+          <span class="text-xs font-bold text-gray-500">线索总数</span>
+        </div>
+        <p class="text-4xl font-black text-[#1A3A5C] mb-1">{{ cluesList.length }}</p>
+        <p class="text-xs text-gray-400">条</p>
+      </div>
+    </div>
+
+    <!-- 数据表 -->
+    <div class="app-card p-8 shadow-md rounded-xl">
+      <div class="flex justify-between items-center mb-6">
+        <div class="flex items-center gap-3">
+          <div class="w-1 h-6 bg-[#C0392B] rounded-full"></div>
+          <div class="flex items-center gap-2">
+            <span class="text-xl">🔍</span>
+            <h3 class="text-lg font-bold text-[#1A3A5C]">案件可疑线索</h3>
+          </div>
         </div>
         <div class="flex gap-2">
-          <ElButton :icon="CircleCheck" type="danger" @click="handleAudit">
-            审核
-          </ElButton>
-          <PrimaryButton type="primary" :icon="Upload" @click="goToUpload">上传新证据</PrimaryButton>
-          <PrimaryButton type="secondary" :icon="Download" @click="exportList">导出清单</PrimaryButton>
+          <el-button size="small" :icon="Download" style="color: #1A3A5C; border-color: #D0D5DD" class="!rounded-md">导出报告</el-button>
         </div>
       </div>
-    </div>
 
-    <div class="grid grid-cols-3 gap-5">
-      <StatCard title="线索总数" :value="totalCount" unit="条" icon="📂" color="brand" />
-      <StatCard title="刑事犯罪" :value="severeCount" unit="条" icon="⚡" color="danger" />
-      <StatCard title="民事侵权" :value="mediumCount" unit="条" icon="⚠️" color="warning" />
-    </div>
-
-    <div class="app-card p-5">
-      <div class="flex gap-4 mb-4 items-center">
-        <ElInput v-model="searchText" placeholder="搜索线索ID/证据原文/命中关键词" :prefix-icon="Search" class="!w-[280px]" clearable />
-        <ElSelect v-model="filterType" placeholder="线索类型" clearable class="!w-[140px]">
-          <ElOption label="主观明知" value="主观明知" />
-          <ElOption label="价格异常" value="价格异常" />
-          <ElOption label="角色异常" value="角色异常" />
-        </ElSelect>
-        <ElSelect v-model="filterStatus" placeholder="严重程度" clearable class="!w-[140px]">
-          <ElOption label="刑事犯罪" value="刑事犯罪" />
-          <ElOption label="民事侵权" value="民事侵权" />
-          <ElOption label="行政违法" value="行政违法" />
-        </ElSelect>
-        <el-button @click="resetFilter">重置</el-button>
+      <div class="flex gap-4 mb-6 items-center">
+        <el-input v-model="searchText" placeholder="搜索线索内容/罪名" :prefix-icon="Search" class="!w-[300px]" size="default" clearable />
+        <el-select v-model="filterType" placeholder="线索类型" class="!w-[180px]" size="default" clearable>
+          <el-option label="主观明知" value="主观明知" />
+          <el-option label="价格异常" value="价格异常" />
+          <el-option label="物流异常" value="物流异常" />
+        </el-select>
+        <el-button @click="resetFilter" class="px-6">重置</el-button>
       </div>
 
-      <ElTable :data="filteredList" stripe class="w-full" v-loading="loading">
-        <ElTableColumn prop="id" label="线索ID" width="100" />
-        <ElTableColumn prop="case_id" label="案件ID" width="100" />
-        <ElTableColumn prop="clue_type" label="线索类型" width="120">
+      <el-table 
+        :data="filteredList" 
+        stripe 
+        size="default" 
+        class="w-full custom-table" 
+        v-loading="loading"
+        :header-cell-style="{ background: '#F8FAFC', color: '#64748B', fontWeight: '600' }"
+      >
+        <el-table-column prop="clue_type" label="线索类型" width="130">
           <template #default="{ row }">
-            <ElTag :type="getClueTypeTag(row.clue_type)" size="small">{{ row.clue_type }}</ElTag>
+            <span
+              class="px-3 py-1 rounded text-xs font-bold"
+              :style="{
+                background: row.clue_type === '主观明知' ? '#EEF2FF' : row.clue_type === '价格异常' ? '#FFF1F2' : '#F0FDF4',
+                color: row.clue_type === '主观明知' ? '#4F46E5' : row.clue_type === '价格异常' ? '#E11D48' : '#16A34A',
+              }"
+            >
+              {{ row.clue_type }}
+            </span>
           </template>
-        </ElTableColumn>
-        <ElTableColumn prop="evidence_text" label="证据原文" min-width="200" show-overflow-tooltip />
-        <ElTableColumn prop="hit_keywords" label="命中关键词" min-width="120" show-overflow-tooltip />
-        <ElTableColumn prop="score" label="评分" width="80" align="center">
-          <template #default="{ row }">
-            <span class="font-semibold">{{ row.score }}/10</span>
+        </el-table-column>
+        <el-table-column prop="evidence_text" label="线索内容" min-width="250" show-overflow-tooltip>
+          <template #default="scope">
+            <span class="text-[#334155] leading-relaxed">{{ scope.row.evidence_text }}</span>
           </template>
-        </ElTableColumn>
-        <ElTableColumn prop="crime_type" label="涉嫌罪名" min-width="150" show-overflow-tooltip />
-        <ElTableColumn prop="severity_level" label="严重程度" width="120">
+        </el-table-column>
+        <el-table-column label="关键特征" min-width="150">
           <template #default="{ row }">
-            <ElTag :type="getSeverityTag(row.severity_level)" size="small">{{ row.severity_level }}</ElTag>
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="操作" width="100" fixed="right">
-          <template #default="{ row }">
-            <div class="flex gap-1">
-              <el-button size="small" class="!text-brand" @click="viewClueDetail(row.id)">查看</el-button>
+            <div class="flex flex-wrap gap-1.5">
+              <span 
+                v-if="typeof row.hit_keywords === 'string'"
+                class="px-2 py-0.5 bg-[#FEF2F2] text-[#DC2626] text-[11px] font-bold rounded border border-[#FECACA]"
+              >
+                {{ row.hit_keywords }}
+              </span>
+              <span 
+                v-else
+                v-for="k in row.hit_keywords" 
+                :key="k" 
+                class="px-2 py-0.5 bg-[#FEF2F2] text-[#DC2626] text-[11px] font-bold rounded border border-[#FECACA]"
+              >
+                {{ k }}
+              </span>
             </div>
           </template>
-        </ElTableColumn>
-      </ElTable>
+        </el-table-column>
+        <el-table-column prop="score" label="风险指数" width="100" align="center">
+          <template #default="{ row }">
+            <span class="font-black text-sm" :class="row.score >= 8 ? 'text-red-600' : 'text-orange-600'">{{ row.score }}/10</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="severity_level" label="严重程度" width="120">
+          <template #default="{ row }">
+            <span :class="row.severity_level === '刑事犯罪' ? 'text-red-600 font-bold' : 'text-gray-600'">{{ row.severity_level }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="crime_type" label="涉嫌罪名" min-width="180" show-overflow-tooltip>
+          <template #default="scope">
+            <span class="text-gray-600 italic text-sm">{{ scope.row.crime_type }}</span>
+          </template>
+        </el-table-column>
+      </el-table>
     </div>
   </div>
 </template>
+
+<style scoped>
+.custom-table :deep(.el-table__row) {
+  height: 60px;
+}
+.custom-table :deep(.el-table__cell) {
+  padding: 12px 0;
+}
+</style>

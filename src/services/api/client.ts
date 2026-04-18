@@ -1,7 +1,7 @@
 import axios, { type AxiosInstance, type AxiosRequestConfig, type InternalAxiosRequestConfig } from "axios";
 import { ApiError, NetworkError, ValidationError } from "./errors";
 
-const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api";
+const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "/api";
 const TIMEOUT = 15000;
 
 function createClient(): AxiosInstance {

@@ -16,23 +16,22 @@ const routes: RouteRecordRaw[] = [
   {
     path: "/evidence",
     name: "evidence",
-    redirect: "/evidence/chat",
     component: () => import("@/features/evidence/pages/EvidencePage.vue"),
     children: [
       {
         path: "chat",
         name: "evidence-chat",
-        component: () => import("@/features/evidence/pages/EvidencePage.vue"),
+        component: { render: () => null },
       },
       {
         path: "transfer",
         name: "evidence-transfer",
-        component: () => import("@/features/evidence/pages/EvidencePage.vue"),
+        component: { render: () => null },
       },
       {
         path: "logistics",
         name: "evidence-logistics",
-        component: () => import("@/features/evidence/pages/EvidencePage.vue"),
+        component: { render: () => null },
       },
     ],
   },
@@ -68,17 +67,22 @@ const routes: RouteRecordRaw[] = [
       {
         path: "person",
         name: "ledger-person",
-        component: () => import("@/features/ledger/pages/LedgerPage.vue"),
+        component: { render: () => null },
       },
       {
         path: "fund",
         name: "ledger-fund",
-        component: () => import("@/features/ledger/pages/LedgerPage.vue"),
+        component: { render: () => null },
       },
       {
         path: "report",
         name: "ledger-report",
-        component: () => import("@/features/ledger/pages/LedgerPage.vue"),
+        component: { render: () => null },
+      },
+      {
+        path: "evidence",
+        name: "ledger-evidence",
+        component: () => import("@/features/ledger/pages/EvidenceListPage.vue"),
       },
     ],
   },

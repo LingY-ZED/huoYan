@@ -1,26 +1,23 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
 import * as echarts from "echarts";
+import { repositories } from "@/services";
+import { get } from "@/services/api/client";
+import dayjs from "dayjs";
 
 
 const trendRef = ref<HTMLDivElement | null>(null);
 const brandRef = ref<HTMLDivElement | null>(null);
 const amountRef = ref<HTMLDivElement | null>(null);
 
-const statCards = [
-  { title: "本月新增案件", value: "3", unit: "件", icon: "📁", bg: "#EEF3F8", change: "+2件" },
-  { title: "线索碰撞成功率", value: "73", unit: "%", icon: "🎯", bg: "#F3F0FB", change: "+5%" },
-  { title: "累计涉案金额", value: "86.5", unit: "万元", icon: "💰", bg: "#FDF6EC", change: "+12.3万" },
-  { title: "重点布控人员", value: "28", unit: "人", icon: "👤", bg: "#FDECEA", change: "+6人" },
-];
+const statCards = ref([
+  { title: "案件总数", value: "0", unit: "件", icon: "📁", bg: "#EEF3F8", change: "--" },
+  { title: "可疑线索数", value: "0", unit: "条", icon: "🎯", bg: "#F3F0FB", change: "--" },
+  { title: "累计涉案金额", value: "0", unit: "万元", icon: "💰", bg: "#FDF6EC", change: "--" },
+  { title: "重点布控人员", value: "0", unit: "人", icon: "👤", bg: "#FDECEA", change: "--" },
+]);
 
-const liveClues = [
-  { id: 1, time: "10:32", case: "2024-京二检-001", tag: "danger", desc: "奥迪A4L轮毂报价280元，低于参考价53%" },
-  { id: 2, time: "09:15", case: "2024-京二检-002", tag: "warning", desc: "浙江→哈尔滨跨省供货链路" },
-  { id: 3, time: "昨天", case: "2024-京二检-001", tag: "purple", desc: "刘某某同时出现于案件002" },
-  { id: 4, time: "昨天", case: "2024-京二检-003", tag: "danger", desc: "主观明知关键词「别声张」命中" },
-  { id: 5, time: "03-28", case: "2024-京二检-002", tag: "warning", desc: "收款账号农行***4589共用" },
-];
+const liveClues = ref<any[]>([]);
 
 function initTrendChart() {
   if (!trendRef.value) return;
@@ -31,7 +28,7 @@ function initTrendChart() {
     grid: { left: 48, right: 16, top: 16, bottom: 48 },
     xAxis: {
       type: "category",
-      data: ["10月", "11月", "12月", "1月", "2月", "3月"],
+      data: [],
       axisLine: { lineStyle: { color: "#D0D5DD" } },
       axisLabel: { fontSize: 11, color: "#888" },
     },
@@ -45,14 +42,14 @@ function initTrendChart() {
       {
         name: "新增案件",
         type: "bar",
-        data: [2, 3, 2, 4, 3, 3],
+        data: [],
         itemStyle: { color: "#1A3A5C", borderRadius: [4, 4, 0, 0] },
         barMaxWidth: 28,
       },
       {
         name: "完成核查",
         type: "bar",
-        data: [1, 2, 3, 2, 4, 3],
+        data: [],
         itemStyle: { color: "#C0392B", borderRadius: [4, 4, 0, 0] },
         barMaxWidth: 28,
       },
@@ -75,13 +72,7 @@ function initBrandChart() {
         center: ["35%", "50%"],
         itemStyle: { borderRadius: 6, borderColor: "#fff", borderWidth: 2 },
         label: { show: false },
-        data: [
-          { value: 35, name: "奥迪", itemStyle: { color: "#C0392B" } },
-          { value: 25, name: "博世", itemStyle: { color: "#1A3A5C" } },
-          { value: 20, name: "米其林", itemStyle: { color: "#27AE60" } },
-          { value: 12, name: "瓦莱奥", itemStyle: { color: "#E67E22" } },
-          { value: 8, name: "其他", itemStyle: { color: "#94A3B8" } },
-        ],
+        data: [],
       },
     ],
   });
@@ -97,7 +88,7 @@ function initAmountChart() {
     grid: { left: 48, right: 16, top: 10, bottom: 24 },
     xAxis: {
       type: "category",
-      data: ["10月", "11月", "12月", "1月", "2月", "3月"],
+      data: [],
       axisLine: { lineStyle: { color: "#D0D5DD" } },
       axisLabel: { fontSize: 11, color: "#888" },
     },
@@ -110,7 +101,7 @@ function initAmountChart() {
     series: [
       {
         type: "line",
-        data: [18.2, 25.5, 31.8, 28.4, 45.2, 86.5],
+        data: [],
         smooth: true,
         lineStyle: { color: "#C0392B", width: 2 },
         itemStyle: { color: "#C0392B" },
@@ -122,10 +113,118 @@ function initAmountChart() {
   window.addEventListener("resize", resize);
 }
 
+async function fetchDashboardData() {
+  try {
+    // 1. Fetch cases
+    const casesRes = await repositories.cases.listCases({ limit: 500 });
+    const cases = Array.isArray(casesRes) ? casesRes : ((casesRes as any)?.list || (casesRes as any)?.data || []);
+    
+    // 2. Fetch persons
+    const personsRes = await get<any>('/ledger/persons');
+    const persons = Array.isArray(personsRes) ? personsRes : ((personsRes as any)?.list || (personsRes as any)?.data || []);
+    
+    // 3. Fetch transactions
+    const transRes = await get<any>('/ledger/transactions');
+    const transactions = Array.isArray(transRes) ? transRes : ((transRes as any)?.list || (transRes as any)?.data || []);
+
+    // Fetch suspicious clues for all cases
+    let suspiciousCount = 0;
+    const liveCluesData = [];
+    for (const c of cases) {
+      try {
+        const suspicious = await repositories.cases.getCaseSuspicious(c.id.toString());
+        const clues = Array.isArray(suspicious) ? suspicious : ((suspicious as any)?.data || []);
+        suspiciousCount += clues.length;
+        
+        for (const clue of clues) {
+          liveCluesData.push({
+            id: clue.id || Math.random(),
+            time: "最新",
+            case: c.case_no,
+            tag: clue.severity_level === '刑事犯罪' ? 'danger' : 'warning',
+            desc: clue.evidence_text?.substring(0, 30) + '...'
+          });
+        }
+      } catch (err) {
+        // ignore individual case clue fetch error
+      }
+    }
+    
+    if (liveCluesData.length > 0) {
+      liveClues.value = liveCluesData.slice(0, 10);
+    }
+
+    // Update Stats
+    const totalCases = cases.length;
+    const totalAmount = cases.reduce((sum: number, c: any) => sum + (c.amount || 0), 0);
+    const keyPersonsCount = persons.length;
+
+    statCards.value = [
+      { title: "案件总数", value: totalCases.toString(), unit: "件", icon: "📁", bg: "#EEF3F8", change: "--" },
+      { title: "可疑线索数", value: suspiciousCount.toString(), unit: "条", icon: "🎯", bg: "#F3F0FB", change: "--" },
+      { title: "累计涉案金额", value: (totalAmount / 10000).toFixed(1), unit: "万元", icon: "💰", bg: "#FDF6EC", change: "--" },
+      { title: "重点布控人员", value: keyPersonsCount.toString(), unit: "人", icon: "👤", bg: "#FDECEA", change: "--" },
+    ];
+
+    // Chart 1: Case Trend (group by month from cases)
+    const trendMap = new Map<string, number>();
+    cases.forEach((c: any) => {
+      const month = dayjs(c.created_at).format('YYYY-MM');
+      trendMap.set(month, (trendMap.get(month) || 0) + 1);
+    });
+    const sortedMonths = Array.from(trendMap.keys()).sort();
+    const trendData = sortedMonths.map(m => trendMap.get(m)!);
+
+    if (trendRef.value) {
+      const chart = echarts.getInstanceByDom(trendRef.value) || echarts.init(trendRef.value);
+      chart.setOption({
+        xAxis: { data: sortedMonths },
+        series: [{ data: trendData }, { data: [] }] // Replace with real data
+      });
+    }
+
+    // Chart 2: Brand Distribution
+    const brandMap = new Map<string, number>();
+    cases.forEach((c: any) => {
+      const brand = c.brand || '未知';
+      brandMap.set(brand, (brandMap.get(brand) || 0) + 1);
+    });
+    const brandData = Array.from(brandMap.entries()).map(([name, value]) => ({ name, value }));
+
+    if (brandRef.value) {
+      const chart = echarts.getInstanceByDom(brandRef.value) || echarts.init(brandRef.value);
+      chart.setOption({
+        series: [{ data: brandData }]
+      });
+    }
+
+    // Chart 3: Amount Trend (from transactions)
+    const amountMap = new Map<string, number>();
+    transactions.forEach((t: any) => {
+      const month = dayjs(t.transaction_time).format('YYYY-MM');
+      amountMap.set(month, (amountMap.get(month) || 0) + (t.amount || 0));
+    });
+    const sortedTransMonths = Array.from(amountMap.keys()).sort();
+    const transData = sortedTransMonths.map(m => (amountMap.get(m)! / 10000).toFixed(1));
+
+    if (amountRef.value) {
+      const chart = echarts.getInstanceByDom(amountRef.value) || echarts.init(amountRef.value);
+      chart.setOption({
+        xAxis: { data: sortedTransMonths },
+        series: [{ data: transData }]
+      });
+    }
+
+  } catch (error) {
+    console.error("Failed to fetch dashboard data:", error);
+  }
+}
+
 onMounted(() => {
   initTrendChart();
   initBrandChart();
   initAmountChart();
+  fetchDashboardData();
 });
 </script>
 

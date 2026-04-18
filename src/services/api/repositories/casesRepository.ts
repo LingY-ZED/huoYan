@@ -9,13 +9,16 @@ export function createApiCasesRepository(): CasesRepository {
     async getCaseDetail(caseId: string): Promise<GetCaseDetailResponse> {
       return get<GetCaseDetailResponse>(`/cases/${caseId}`);
     },
+    async getSuspiciousClues(caseId: string) {
+      return get(`/cases/${caseId}/suspicious`);
+    },
     async createCase(req: CreateCaseRequest): Promise<CreateCaseResponse> {
       return post<CreateCaseResponse>("/cases", req);
     },
     async updateCase(caseId: string, req: UpdateCaseRequest): Promise<UpdateCaseResponse> {
       return put<UpdateCaseResponse>(`/cases/${caseId}`, req);
     },
-    async deleteCase(caseId: string) {
+    async deleteCase(caseId: string): Promise<ApiResult<null>> {
       return del<null>(`/cases/${caseId}`);
     },
     async getCaseSuspicious(caseId: string) {
