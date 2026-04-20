@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, ref, watch, onMounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { RouterLink, RouterView } from "vue-router";
+import { get } from "@/services/api/client";
 import {
   DataBoard,
   FolderOpened,
@@ -16,6 +17,29 @@ const route = useRoute();
 const router = useRouter();
 const activePath = computed(() => route.path);
 const expandedNav = ref<string | null>(null);
+const criminalCluesCount = ref(0);
+
+// Fetch criminal-level clue count for notification badge (#19)
+onMounted(async () => {
+  try {
+    const cases = await get<any[]>('/cases?limit=500');
+    const caseList = Array.isArray(cases) ? cases : ((cases as any)?.list || []);
+    let count = 0;
+    for (const c of caseList.slice(0, 20)) {
+      try {
+        const res = await get<any>(`/cases/${c.id}/suspicious`);
+        const s = res as any;
+        const all = [
+          ...(s.suspicion_clues || s.suspicious_clues || []),
+          ...(s.price_clues || []),
+          ...(s.role_clues || []),
+        ];
+        count += all.filter((x: any) => x.severity_level === '刑事犯罪').length;
+      } catch {}
+    }
+    criminalCluesCount.value = count;
+  } catch {}
+});
 
 const nav = [
   { to: "/dashboard", label: "数据看板", icon: DataBoard },
@@ -97,7 +121,7 @@ function handleParentNavClick(parentPath: string) {
         <span class="text-xs ml-2" style="color: rgba(255,255,255,0.6)">汽配知产保护分析助手</span>
       </div>
       <div class="flex items-center gap-4">
-        <el-badge :value="3" type="danger">
+        <el-badge :value="criminalCluesCount > 0 ? criminalCluesCount : null" type="danger">
           <el-button
             :icon="Bell"
             circle

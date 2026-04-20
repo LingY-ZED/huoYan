@@ -30,6 +30,7 @@ watch(
 const loading = ref(false);
 const fundLoading = ref(false);
 const personLoading = ref(false);
+const isMasked = ref(true);
 
 // 资金流水数据
 const fundRecords = ref<any[]>([]);
@@ -280,6 +281,7 @@ async function exportExcel(type: 'persons' | 'transactions') {
         <div class="flex justify-between items-center mb-4">
           <h3 class="card-title !mb-0">💸 资金流水明细</h3>
           <div class="flex gap-2">
+            <el-checkbox v-model="isMasked" label="脱敏显示" border size="small" class="mr-2" />
             <el-button size="small" :icon="Download" style="color: #1A3A5C; border-color: #D0D5DD" @click="exportExcel('transactions')">导出 Excel</el-button>
           </div>
         </div>
@@ -293,15 +295,22 @@ async function exportExcel(type: 'persons' | 'transactions') {
           <el-button @click="resetFundFilter">重置</el-button>
         </div>
         <el-table :data="fundRecords" stripe size="small" v-loading="fundLoading">
+          <el-table-column prop="case_no" label="案件编号" width="160">
+            <template #default="scope">
+              <span class="font-mono text-xs text-[#1A3A5C] font-semibold">
+                {{ scope.row.case_no || '未知案件' }}
+              </span>
+            </template>
+          </el-table-column>
           <el-table-column prop="transaction_time" label="日期" width="110" />
           <el-table-column prop="payer" label="付款方" width="120">
             <template #default="scope">
-              <span>{{ maskName(scope.row.payer) }}</span>
+              <span>{{ isMasked ? maskName(scope.row.payer) : scope.row.payer }}</span>
             </template>
           </el-table-column>
           <el-table-column prop="payee" label="收款方" width="120">
             <template #default="scope">
-              <span>{{ maskName(scope.row.payee) }}</span>
+              <span>{{ isMasked ? maskName(scope.row.payee) : scope.row.payee }}</span>
             </template>
           </el-table-column>
           <el-table-column label="金额" width="130" align="right">
@@ -314,7 +323,6 @@ async function exportExcel(type: 'persons' | 'transactions') {
               <span class="tag-info">{{ scope.row.payment_method }}</span>
             </template>
           </el-table-column>
-          <el-table-column prop="case_id" label="关联案件" width="160" />
         </el-table>
       </div>
     </div>
@@ -347,6 +355,7 @@ async function exportExcel(type: 'persons' | 'transactions') {
         <div class="flex justify-between items-center mb-4">
           <h3 class="card-title !mb-0">👤 人物台账管理</h3>
           <div class="flex gap-2">
+            <el-checkbox v-model="isMasked" label="脱敏显示" border size="small" class="mr-2" />
             <el-button size="small" :icon="Download" style="color: #1A3A5C; border-color: #D0D5DD" @click="exportExcel('persons')">导出 Excel</el-button>
           </div>
         </div>
@@ -361,9 +370,16 @@ async function exportExcel(type: 'persons' | 'transactions') {
           <el-button @click="resetPersonFilter">重置</el-button>
         </div>
         <el-table :data="filteredPersonList" stripe size="small" v-loading="personLoading">
+          <el-table-column label="关联案件" width="160">
+            <template #default="scope">
+              <span class="font-mono text-xs text-[#1A3A5C] font-semibold">
+                {{ scope.row.case_no || personFilter.case_no || (scope.row.linked_cases > 1 ? `涉及 ${scope.row.linked_cases} 个案件` : (scope.row.linked_cases === 1 ? '单案关联' : '未知案件')) }}
+              </span>
+            </template>
+          </el-table-column>
           <el-table-column prop="name" label="姓名" width="120">
             <template #default="scope">
-              <span class="font-semibold text-[#1A3A5C]">{{ maskName(scope.row.name) }}</span>
+              <span class="font-semibold text-[#1A3A5C]">{{ isMasked ? maskName(scope.row.name) : scope.row.name }}</span>
             </template>
           </el-table-column>
           <el-table-column prop="role" label="角色" width="130">
@@ -399,12 +415,29 @@ async function exportExcel(type: 'persons' | 'transactions') {
               <span class="font-bold text-red-600">¥{{ scope.row.illegal_business_amount.toLocaleString() }}</span>
             </template>
           </el-table-column>
-          <el-table-column prop="linked_cases" label="管理案件数量" width="110" align="center">
+          <el-table-column prop="linked_cases" label="关联案件数" width="110" align="center">
             <template #default="scope">
-              <span class="font-semibold text-[#1A3A5C]">{{ scope.row.linked_cases }} 件</span>
+              <span
+                class="font-semibold"
+                :style="{ color: scope.row.linked_cases > 0 ? '#C0392B' : '#1A3A5C' }"
+              >{{ scope.row.linked_cases }} 件</span>
             </template>
           </el-table-column>
 
+          <el-table-column label="案件门槛判定" width="150" align="center">
+            <template #default="{ row }">
+              <span 
+                class="px-2 py-0.5 rounded text-[10px] font-bold border"
+                :style="{
+                  background: row.illegal_business_amount >= 50000 ? '#FEF2F2' : (row.illegal_business_amount >= 20000 ? '#FFFBEB' : '#F0FDF4'),
+                  color: row.illegal_business_amount >= 50000 ? '#DC2626' : (row.illegal_business_amount >= 20000 ? '#D97706' : '#16A34A'),
+                  borderColor: row.illegal_business_amount >= 50000 ? '#FECACA' : (row.illegal_business_amount >= 20000 ? '#FDE68A' : '#BBF7D0')
+                }"
+              >
+                {{ row.illegal_business_amount >= 50000 ? '刑事立案标准' : (row.illegal_business_amount >= 20000 ? '重点关注' : '行政违法级别') }}
+              </span>
+            </template>
+          </el-table-column>
         </el-table>
       </div>
     </div>

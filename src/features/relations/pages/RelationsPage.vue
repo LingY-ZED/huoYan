@@ -618,6 +618,25 @@ onMounted(() => {
   }
 });
 
+async function handleGlobalCaseChange() {
+  if (graphTab.value === 'upstream') {
+    reloadUpstream();
+  } else {
+    // 在跨案关联图中高亮该案件
+    const caseNodeId = `case_${selectedCaseId.value}`;
+    const found = crossGraph.value?.nodes.find(n => n.id === caseNodeId);
+    if (found) {
+      selectedNode.value = found;
+      // 可以在此处增加 ECharts 实例的中心定位逻辑 (暂略)
+    }
+  }
+}
+
+function reloadCurrentGraph() {
+  if (graphTab.value === 'upstream') reloadUpstream();
+  else loadCrossCaseGraph();
+}
+
 onBeforeUnmount(() => {
   crossChart.value?.dispose();
   upstreamChart.value?.dispose();
@@ -626,25 +645,38 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="space-y-5">
+    <!-- 全局头部：案件选择与操作 -->
+    <div class="app-card p-5">
+      <div class="flex justify-between items-center">
+        <div class="flex items-center gap-4">
+          <div class="flex items-center gap-2">
+            <span class="text-sm font-bold text-gray-500">当前主战案件:</span>
+            <el-select v-model="selectedCaseId" size="default" style="width: 280px" @change="handleGlobalCaseChange">
+              <el-option v-for="c in cases" :key="c.id" :label="c.case_no + ' — ' + c.suspect" :value="c.id" />
+            </el-select>
+          </div>
+          <div class="h-6 w-px bg-gray-200"></div>
+          <div class="flex gap-2">
+            <el-button size="small" :type="graphTab === 'upstream' ? 'primary' : ''" @click="graphTab = 'upstream'" :style="graphTab === 'upstream' ? 'background: #1A3A5C; border-color: #1A3A5C' : ''">单案全链穿透</el-button>
+            <el-button size="small" :type="graphTab === 'crosscase' ? 'primary' : ''" @click="graphTab = 'crosscase'" :style="graphTab === 'crosscase' ? 'background: #1A3A5C; border-color: #1A3A5C' : ''">跨案碰撞关联</el-button>
+          </div>
+        </div>
+        <div class="flex gap-2">
+           <el-button size="small" style="color: #1A3A5C; border-color: #D0D5DD" @click="reloadCurrentGraph">
+             🔄 刷新布局
+           </el-button>
+           <el-button size="small" type="primary" style="background: #1A3A5C; border-color: #1A3A5C" @click="exportPng(graphTab === 'crosscase' ? 'cross' : 'upstream')">
+             导出可视化图
+           </el-button>
+        </div>
+      </div>
+    </div>
+
     <!-- ===== 上下游关系图 ===== -->
     <div v-show="graphTab === 'upstream'">
       <div class="grid grid-cols-5 gap-5">
         <div class="col-span-3">
           <div class="app-card p-5">
-            <div class="flex justify-between items-center mb-4">
-              <div class="flex items-center gap-3">
-                <span class="text-sm" style="color: #888">选择案件：</span>
-                <el-select v-model="selectedCaseId" size="small" style="width: 250px" @change="reloadUpstream">
-                  <el-option v-for="c in cases" :key="c.id" :label="c.case_no + ' — ' + c.suspect" :value="c.id" />
-                </el-select>
-                <el-button size="small" style="color: #1A3A5C; border-color: #D0D5DD" @click="reloadUpstream">
-                  🔄 重置布局
-                </el-button>
-                <el-button size="small" type="primary" style="background: #1A3A5C; border-color: #1A3A5C" @click="exportPng('upstream')">
-                  导出 PNG
-                </el-button>
-              </div>
-            </div>
             <div class="graph-legend mb-3">
               <div class="legend-item"><div class="legend-dot" style="background: #1E293B"></div>上游供货商</div>
               <div class="legend-item"><div class="legend-dot" style="background: #C0392B"></div>核心嫌疑人</div>
@@ -728,27 +760,42 @@ onBeforeUnmount(() => {
               <div v-if="selectedNodeDetail.evidence" class="mt-4">
                 <p class="text-xs font-bold mb-2" style="color: #1A3A5C">⛓️ 关联证据 (本案证据)</p>
                 <div class="space-y-2">
-                  <!-- 交易证据 -->
-                  <div v-if="selectedNodeDetail.evidence.transactions?.length" class="p-2 rounded border border-blue-100" style="background: #F0F7FF">
-                    <p class="text-[11px] font-bold text-blue-800 mb-1">💰 交易记录</p>
-                    <div v-for="(t, idx) in selectedNodeDetail.evidence.transactions" :key="idx" class="text-[10px] text-blue-700 flex justify-between">
-                       <span>{{ t.type }}: {{ parseFloat(t.amount || 0).toLocaleString() }}元</span>
-                       <span class="font-mono">{{ t.time }}</span>
-                    </div>
-                  </div>
-                  <!-- 物流证据 -->
-                  <div v-if="selectedNodeDetail.evidence.logistics?.length" class="p-2 rounded border border-green-100" style="background: #F6FFED">
-                    <p class="text-[11px] font-bold text-green-800 mb-1">📦 物流发货</p>
-                    <div v-for="(l, idx) in selectedNodeDetail.evidence.logistics" :key="idx" class="text-[10px] text-green-700">
-                       {{ l.type }}: {{ l.description }} <span class="font-mono opacity-70">({{ l.time }})</span>
-                    </div>
-                  </div>
                   <!-- 通讯证据 -->
-                  <div v-if="selectedNodeDetail.evidence.communications?.length" class="p-2 rounded border border-purple-100" style="background: #F9F0FF">
-                    <p class="text-[11px] font-bold text-purple-800 mb-1">💬 通讯记录</p>
-                    <div v-for="(c, idx) in selectedNodeDetail.evidence.communications" :key="idx" class="text-[10px] text-purple-700">
-                       <span class="font-bold">[{{ c.type }}]</span> {{ c.content }} 
-                       <span v-if="c.hit_keywords?.length" class="px-1 bg-red-100 text-red-500 rounded"> {{ c.hit_keywords.join(',') }}</span>
+                  <div v-if="selectedNodeDetail.evidence.communications?.length" class="space-y-2">
+                    <div v-for="(c, idx) in selectedNodeDetail.evidence.communications" :key="idx" 
+                      class="p-2 rounded border border-purple-100" style="background: #F9F0FF">
+                      <div class="flex justify-between items-start mb-1">
+                        <p class="text-[11px] font-bold text-purple-800">💬 通讯记录</p>
+                        <span v-if="c.severity_level" 
+                          class="px-1.5 py-0.5 rounded-full text-[9px] font-bold"
+                          :style="{
+                            background: c.severity_level === '刑事犯罪' ? '#FEF2F2' : '#F0FDF4',
+                            color: c.severity_level === '刑事犯罪' ? '#DC2626' : '#16A34A'
+                          }">
+                          {{ c.severity_level }}
+                        </span>
+                      </div>
+                      <p class="text-[10px] text-purple-700">
+                         <span class="font-bold">[{{ c.type }}]</span> {{ c.content }} 
+                         <span v-if="c.hit_keywords?.length" class="px-1 bg-red-100 text-red-500 rounded"> {{ c.hit_keywords.join(',') }}</span>
+                      </p>
+                      <p class="text-[9px] text-purple-400 mt-1 font-mono">{{ c.time }}</p>
+                    </div>
+                  </div>
+                  <!-- 交易证据 -->
+                  <div v-if="selectedNodeDetail.evidence.transactions?.length" class="space-y-2">
+                    <div v-for="(t, idx) in selectedNodeDetail.evidence.transactions" :key="idx" 
+                      class="p-2 rounded border border-blue-100" style="background: #F0F7FF">
+                      <div class="flex justify-between items-start mb-1">
+                        <p class="text-[11px] font-bold text-blue-800">💰 交易记录</p>
+                        <span class="px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-[#F0FDF4] text-[#16A34A]">
+                          行政违法
+                        </span>
+                      </div>
+                      <div class="text-[10px] text-blue-700 flex justify-between">
+                         <span>{{ t.type }}: {{ parseFloat(t.amount || 0).toLocaleString() }}元</span>
+                         <span class="font-mono">{{ t.time }}</span>
+                      </div>
                     </div>
                   </div>
                 </div>

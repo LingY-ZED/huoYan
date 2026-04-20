@@ -128,40 +128,69 @@ async function fetchDashboardData() {
     const transactions = Array.isArray(transRes) ? transRes : ((transRes as any)?.list || (transRes as any)?.data || []);
 
     // Fetch suspicious clues for all cases
+    // API returns { suspicion_clues: [...], price_clues: [...], role_clues: [...] }
     let suspiciousCount = 0;
-    const liveCluesData = [];
+    const liveCluesData: any[] = [];
     for (const c of cases) {
       try {
         const suspicious = await repositories.cases.getCaseSuspicious(c.id.toString());
-        const clues = Array.isArray(suspicious) ? suspicious : ((suspicious as any)?.data || []);
-        suspiciousCount += clues.length;
-        
-        for (const clue of clues) {
+        // Handle both array response and object response with named arrays
+        let allClues: any[] = [];
+        if (Array.isArray(suspicious)) {
+          allClues = suspicious;
+        } else if (suspicious && typeof suspicious === 'object') {
+          const s = (suspicious as any);
+          allClues = [
+            ...(s.suspicion_clues || s.suspicious_clues || []),
+            ...(s.price_clues || []),
+            ...(s.role_clues || []),
+            ...(s.data || []),
+          ];
+        }
+        suspiciousCount += allClues.length;
+
+        for (const clue of allClues) {
+          // #12 Use actual clue_type for tag label
+          const tagType = clue.severity_level === '刑事犯罪' ? 'danger'
+            : clue.severity_level === '民事侵权' ? 'warning' : 'info';
           liveCluesData.push({
             id: clue.id || Math.random(),
-            time: "最新",
+            time: c.created_at ? dayjs(c.created_at).format('MM-DD') : '最新',
             case: c.case_no,
-            tag: clue.severity_level === '刑事犯罪' ? 'danger' : 'warning',
-            desc: clue.evidence_text?.substring(0, 30) + '...'
+            tag: tagType,
+            clueType: clue.clue_type || clue.severity_level || '可疑线索',
+            severity: clue.severity_level || '',
+            desc: (clue.evidence_text || '').substring(0, 30) + (clue.evidence_text?.length > 30 ? '...' : '')
           });
         }
       } catch (err) {
         // ignore individual case clue fetch error
       }
     }
-    
+
     if (liveCluesData.length > 0) {
+      // Sort by severity: 刑事犯罪 first
+      liveCluesData.sort((a, b) => (a.severity === '刑事犯罪' ? -1 : 1));
       liveClues.value = liveCluesData.slice(0, 10);
     }
 
-    // Update Stats
+    // Update Stats with month-over-month change (#11)
     const totalCases = cases.length;
     const totalAmount = cases.reduce((sum: number, c: any) => sum + (c.amount || 0), 0);
     const keyPersonsCount = persons.length;
 
+    // Compute month-over-month for cases
+    const thisMonth = dayjs().format('YYYY-MM');
+    const lastMonth = dayjs().subtract(1, 'month').format('YYYY-MM');
+    const thisMonthCases = cases.filter((c: any) => dayjs(c.created_at).format('YYYY-MM') === thisMonth).length;
+    const lastMonthCases = cases.filter((c: any) => dayjs(c.created_at).format('YYYY-MM') === lastMonth).length;
+    const caseChange = lastMonthCases > 0
+      ? `${thisMonthCases >= lastMonthCases ? '+' : ''}${thisMonthCases - lastMonthCases} 件`
+      : thisMonthCases > 0 ? `本月新增 ${thisMonthCases} 件` : '--';
+
     statCards.value = [
-      { title: "案件总数", value: totalCases.toString(), unit: "件", icon: "📁", bg: "#EEF3F8", change: "--" },
-      { title: "可疑线索数", value: suspiciousCount.toString(), unit: "条", icon: "🎯", bg: "#F3F0FB", change: "--" },
+      { title: "案件总数", value: totalCases.toString(), unit: "件", icon: "📁", bg: "#EEF3F8", change: caseChange },
+      { title: "可疑线索数", value: suspiciousCount.toString(), unit: "条", icon: "🎯", bg: "#F3F0FB", change: `共 ${liveCluesData.filter(c => c.severity === '刑事犯罪').length} 条刑事级别` },
       { title: "累计涉案金额", value: (totalAmount / 10000).toFixed(1), unit: "万元", icon: "💰", bg: "#FDF6EC", change: "--" },
       { title: "重点布控人员", value: keyPersonsCount.toString(), unit: "人", icon: "👤", bg: "#FDECEA", change: "--" },
     ];
@@ -247,7 +276,7 @@ onMounted(() => {
           </div>
         </div>
         <div class="mt-3 text-xs" style="color: #aaa">
-          较上月 <span style="color: #27AE60">{{ card.change }}</span>
+          <span style="color: #27AE60">{{ card.change }}</span>
         </div>
       </div>
     </div>
@@ -277,13 +306,13 @@ onMounted(() => {
           style="background: #F5F8FA; border: 1px solid #E8EEF4"
         >
           <div class="flex items-center gap-3">
-            <span class="text-xs" style="color: #aaa">{{ item.time }}</span>
+            <span class="text-xs font-mono" style="color: #aaa">{{ item.time }}</span>
             <span class="text-sm font-semibold" style="color: #1A3A5C">{{ item.case }}</span>
-            <span v-if="item.tag === 'danger'" class="tag-danger">价格异常</span>
-            <span v-else-if="item.tag === 'warning'" class="tag-warning">跨省销售</span>
-            <span v-else class="tag-purple">多案关联</span>
+            <span v-if="item.tag === 'danger'" class="tag-danger">{{ item.clueType }}</span>
+            <span v-else-if="item.tag === 'warning'" class="tag-warning">{{ item.clueType }}</span>
+            <span v-else class="tag-purple">{{ item.clueType }}</span>
           </div>
-          <span class="text-xs" style="color: #888">{{ item.desc }}</span>
+          <span class="text-xs max-w-[240px] truncate" style="color: #888">{{ item.desc }}</span>
         </div>
       </div>
     </div>

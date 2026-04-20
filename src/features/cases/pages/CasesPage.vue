@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from "vue";
 import { useRouter } from "vue-router";
+import dayjs from "dayjs";
 import {
   ElButton,
   ElDialog,
@@ -34,7 +35,17 @@ const loading = ref(false);
 const detailLoading = ref(false);
 const generatingReport = ref(false);
 const chainData = ref<any>(null);
+const linkedCasesCount = ref(0);
+const keyActors = ref<any[]>([]);
+const actorsLoading = ref(false);
+const isMasked = ref(true);
 const reportStore = useReportStore();
+
+function maskName(name: string) {
+  if (!name) return "";
+  if (name.length <= 1) return name;
+  return name.charAt(0) + "*".repeat(name.length - 1);
+}
 
 const lastReportUrl = computed(() => {
   if (!currentCase.value) return "";
@@ -168,10 +179,50 @@ async function loadRelations(caseId: string) {
   chainData.value = null;
 }
 
+// 通过现有的跨案关联接口计算关联案件数
+async function loadLinkedCasesCount(caseId: number) {
+  try {
+    const response = await repositories.relations.getCrossCaseGraph();
+    // response 可能是 { code, data } 或直接是数组
+    const connections = Array.isArray(response) ? response : (response?.data || response);
+    if (!Array.isArray(connections)) {
+      linkedCasesCount.value = 0;
+      return;
+    }
+    // 从跨案关联数据中找出包含当前案件ID的条目，收集所有关联案件
+    const linkedIds = new Set<number>();
+    for (const conn of connections) {
+      const caseIds: number[] = conn.case_ids || [];
+      if (caseIds.includes(caseId)) {
+        caseIds.forEach((id: number) => {
+          if (id !== caseId) linkedIds.add(id);
+        });
+      }
+    }
+    linkedCasesCount.value = linkedIds.size;
+  } catch (error) {
+    console.error("获取关联案件数失败:", error);
+    linkedCasesCount.value = 0;
+  }
+}
+
 function gotoRelations() {
   if (!currentCase.value) return;
   dialogOpen.value = false;
   router.push(`/relations/upstream?caseId=${currentCase.value.id}`);
+}
+
+async function loadKeyActors(caseId: string) {
+  actorsLoading.value = true;
+  try {
+    const res = await get<any>(`/analyze/actors/${caseId}`);
+    keyActors.value = Array.isArray(res) ? res : (res?.data || []);
+  } catch (err) {
+    console.error("加载关键主体失败:", err);
+    keyActors.value = [];
+  } finally {
+    actorsLoading.value = false;
+  }
 }
 
 async function generateReport() {
@@ -212,8 +263,12 @@ function openDetail(row: CaseSummary) {
   dialogOpen.value = true;
   detailData.value = null;
   chainData.value = null;
+  linkedCasesCount.value = 0;
+  keyActors.value = [];
   loadCaseDetail(row.id.toString());
   loadRelations(row.id.toString());
+  loadLinkedCasesCount(row.id);
+  loadKeyActors(row.id.toString());
 }
 
 function resetFilter() {
@@ -366,7 +421,11 @@ onMounted(() => {
             <span class="font-semibold text-red-600">{{ row.amount }}元</span>
           </template>
         </el-table-column>
-        <el-table-column prop="created_at" label="创建时间" width="180" />
+        <el-table-column label="创建时间" width="160">
+          <template #default="{ row }">
+            {{ dayjs(row.created_at).format('YYYY-MM-DD HH:mm') }}
+          </template>
+        </el-table-column>
         <el-table-column label="操作" width="130">
           <template #default="{ row }">
             <el-button link type="primary" class="!text-[#1A3A5C] !font-semibold" @click.stop="openDetail(row)">
@@ -389,15 +448,15 @@ onMounted(() => {
         </div>
       </template>
       <div v-if="currentCase" v-loading="detailLoading">
-        <div class="grid grid-cols-4 gap-4 mb-5">
+        <div class="grid grid-cols-5 gap-3 mb-5">
           <div class="p-4 rounded-lg bg-blue-50 border border-blue-100 col-span-2">
             <p class="text-xs font-semibold mb-2 text-blue-500">嫌疑人及产品信息</p>
             <p class="font-bold text-lg text-[#1A3A5C]">{{ currentCase.suspect_name }}</p>
             <p class="text-sm mt-1 text-gray-600">涉案产品：<span class="font-medium">{{ currentCase.brand }}</span></p>
           </div>
           <div class="p-4 rounded-lg bg-red-50 border border-red-100 text-center flex flex-col justify-center">
-            <p class="text-xl font-bold text-red-600">{{ currentCase.amount }}</p>
-            <p class="text-xs text-gray-500 mt-1">涉案金额(元)</p>
+            <p class="text-xl font-bold text-red-600">{{ (currentCase.amount / 10000).toFixed(1) }}</p>
+            <p class="text-xs text-gray-500 mt-1">涉案金额(万元)</p>
           </div>
           <div class="p-4 rounded-lg bg-gray-50 border border-gray-200 text-center flex flex-col justify-center">
             <p class="text-xl font-bold text-[#1A3A5C]">
@@ -407,10 +466,34 @@ onMounted(() => {
           </div>
           <div class="p-4 rounded-lg bg-gray-50 border border-gray-200 text-center flex flex-col justify-center">
             <p class="text-xl font-bold text-[#1A3A5C]">
-              {{ detailData?.linked_cases_count || 0 }}
+              {{ linkedCasesCount }}
             </p>
             <p class="text-xs text-gray-500 mt-1">关联案件数(件)</p>
           </div>
+        </div>
+        <!-- #9 刑事门槛判定 -->
+        <div
+          class="mb-4 px-4 py-3 rounded-lg flex items-center gap-3 text-sm font-semibold"
+          :style="{
+            background: currentCase.amount >= 50000 ? '#FDECEA' : currentCase.amount >= 30000 ? '#FDF6EC' : '#F0FAF0',
+            border: `1px solid ${currentCase.amount >= 50000 ? '#F5C6C2' : currentCase.amount >= 30000 ? '#FAD7A0' : '#A8D8A8'}`
+          }"
+        >
+          <span class="text-lg">
+            {{ currentCase.amount >= 50000 ? '🔴' : currentCase.amount >= 30000 ? '🟡' : '🟢' }}
+          </span>
+          <span :style="{ color: currentCase.amount >= 50000 ? '#C0392B' : currentCase.amount >= 30000 ? '#E67E22' : '#27AE60' }">
+            <template v-if="currentCase.amount >= 50000">
+              已达刑事立案标准（非法经营额 &ge; 5万元），建议移送刑事立案线索
+            </template>
+            <template v-else-if="currentCase.amount >= 20000">
+              达到违法所得门槛（违法所得 &ge; 2万元），可考虑移送行政处罚线索
+            </template>
+            <template v-else>
+              暂未达刑事立案门槛，可应对行政处罚或继续收集证据
+            </template>
+          </span>
+          <span class="ml-auto text-xs font-normal text-gray-400">涉案金额 {{ currentCase.amount?.toLocaleString() }} 元</span>
         </div>
 
         <TabButton
@@ -458,16 +541,60 @@ onMounted(() => {
           </el-table>
         </div>
 
-        <div v-if="detailTab === 'relation'" class="py-12 bg-gray-50 rounded-lg border border-gray-200 text-center">
-          <div class="mb-6 flex flex-col items-center">
-            <div class="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mb-4">
-              <el-icon :size="32" class="text-blue-600"><Share /></el-icon>
+        <div v-if="detailTab === 'relation'" class="space-y-4">
+          <div class="flex justify-between items-center bg-white p-3 rounded-lg border border-gray-100 shadow-sm">
+            <div class="flex items-center gap-2">
+              <span class="text-sm font-semibold text-[#1A3A5C]">🤖 AI 关键主体分析</span>
+              <el-checkbox v-model="isMasked" label="脱敏显示" border size="small" />
             </div>
-            <p class="text-gray-600 font-medium">查看案件完整的上下游关系图谱与资金流向</p>
+            <el-button type="primary" size="small" link @click="gotoRelations">
+              进入深度关系网 →
+            </el-button>
           </div>
-          <el-button type="primary" size="large" @click="gotoRelations" class="!bg-[#1A3A5C] !border-[#1A3A5C] shadow-sm px-8">
-            进入深度关系分析 →
-          </el-button>
+
+          <div v-if="actorsLoading" class="py-12 text-center" v-loading="true"></div>
+          
+          <div v-else-if="keyActors && keyActors.length > 0" class="grid grid-cols-2 gap-3">
+            <div 
+              v-for="(actor, idx) in keyActors" 
+              :key="idx"
+              class="p-4 bg-white rounded-xl border border-gray-200 hover:border-blue-300 transition-all shadow-sm group"
+            >
+              <div class="flex justify-between items-start mb-3">
+                <div class="flex items-center gap-2">
+                  <div class="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold">
+                    {{ actor.name?.charAt(0) }}
+                  </div>
+                  <span class="font-bold text-[#1A3A5C] text-base">
+                    {{ isMasked ? maskName(actor.name) : actor.name }}
+                  </span>
+                </div>
+                <span class="px-2 py-0.5 rounded bg-blue-50 text-blue-600 text-[10px] font-bold border border-blue-100">
+                  {{ actor.role }}
+                </span>
+              </div>
+              <div class="space-y-2 text-xs">
+                <p class="text-gray-600"><span class="text-gray-400">涉嫌罪名：</span>{{ actor.crime_type }}</p>
+                <div class="flex flex-wrap gap-1 mt-1">
+                  <span v-for="tag in actor.keyword_roles" :key="tag" class="px-1.5 py-0.5 rounded bg-gray-50 text-gray-400 border border-gray-100">
+                    # {{ tag }}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div v-else class="py-12 bg-gray-50 rounded-lg border border-gray-200 text-center">
+            <div class="mb-6 flex flex-col items-center">
+              <div class="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mb-4">
+                <el-icon :size="32" class="text-blue-600"><Share /></el-icon>
+              </div>
+              <p class="text-gray-600 font-medium">暂未识别到核心主体，点击下方按钮尝试全量深度分析</p>
+            </div>
+            <el-button type="primary" size="large" @click="gotoRelations" class="!bg-[#1A3A5C] !border-[#1A3A5C] shadow-sm px-8">
+              进入深度关系分析 →
+            </el-button>
+          </div>
         </div>
 
         <div v-if="detailTab === 'report'" class="py-12 bg-gray-50 rounded-lg border border-gray-200 text-center">
@@ -486,6 +613,8 @@ onMounted(() => {
             <p v-else class="text-xs text-gray-400 mt-2">报告尚未生成，请先点击上方按钮</p>
           </div>
         </div>
+
+
       </div>
     </el-dialog>
 

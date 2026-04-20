@@ -7,7 +7,8 @@ import { maskName } from "@/utils/masking";
 import type { EvidenceListItem } from "@/services/api/types/ledger";
 
 const searchText = ref("");
-const selectedCaseNo = ref("");
+const selectedCaseId = ref<string | number>("");
+const isMasked = ref(true);
 const filterType = ref("");
 const loading = ref(false);
 const caseOptions = ref<any[]>([]);
@@ -28,21 +29,26 @@ async function loadCaseOptions() {
       { label: "全部案件", value: "" },
       ...list.map((c: any) => ({
         label: `${c.case_no} — ${c.suspect_name}`,
-        value: c.case_no
+        value: c.id
       }))
     ];
+    
+    // 如果没有选择案件，默认选第一个
+    if (!selectedCaseId.value && list.length > 0) {
+      selectedCaseId.value = list[0].id;
+      loadEvidence(list[0].id);
+    }
   } catch (error) {
     console.error("加载案件选项失败:", error);
   }
 }
 
 // 加载证据数据
-async function loadEvidence() {
+async function loadEvidence(caseId: string | number) {
+  if (!caseId) return;
   loading.value = true;
   try {
-    // 默认使用案件ID 4进行演示
-    const caseId = "4";
-    const response = await repositories.ledger.getEvidenceList(caseId);
+    const response = await repositories.ledger.getEvidenceList(caseId.toString());
     
     const data = (response as any).data || response;
     evidenceList.value = data.evidence_list || [];
@@ -58,13 +64,18 @@ async function loadEvidence() {
   }
 }
 
+import { watch } from "vue";
+watch(selectedCaseId, (newId) => {
+  if (newId) loadEvidence(newId);
+  else evidenceList.value = [];
+});
+
 async function handleExport() {
   try {
     ElMessage.info("正在生成导出文件...");
     const blob = await repositories.export.exportCsv({
       type: "evidence",
-      case_no: selectedCaseNo.value || undefined,
-      case_id: selectedCaseNo.value ? undefined : 4
+      case_id: selectedCaseId.value || undefined
     });
     
     const url = window.URL.createObjectURL(new Blob([blob]));
@@ -99,7 +110,6 @@ function resetFilter() {
 
 onMounted(() => {
   loadCaseOptions();
-  loadEvidence();
 });
 </script>
 
@@ -152,12 +162,13 @@ onMounted(() => {
           </div>
         </div>
         <div class="flex gap-2">
+          <el-checkbox v-model="isMasked" label="脱敏显示" border size="small" class="mr-2" />
           <el-button size="small" :icon="Download" style="color: #1A3A5C; border-color: #D0D5DD" class="!rounded-md" @click="handleExport">导出 Excel</el-button>
         </div>
       </div>
 
       <div class="flex gap-4 mb-6 items-center">
-        <el-select v-model="selectedCaseNo" placeholder="选择关联案件" class="!w-[200px]" size="default" clearable>
+        <el-select v-model="selectedCaseId" placeholder="选择关联案件" class="!w-[200px]" size="default" clearable>
           <el-option v-for="opt in caseOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
         </el-select>
         <div class="relative">
@@ -179,7 +190,14 @@ onMounted(() => {
         v-loading="loading"
         :header-cell-style="{ background: '#F8FAFC', color: '#64748B', fontWeight: '600' }"
       >
-        <el-table-column prop="time" label="发现时间" width="140">
+        <el-table-column label="案件编号" width="150">
+          <template #default="scope">
+            <span class="font-mono text-xs text-[#1A3A5C] font-semibold">
+              {{ scope.row.case_no || caseOptions.find(c => c.value == selectedCaseId)?.label.split(' - ')[0] || '当前案件' }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="time" label="发现时间" width="120">
           <template #default="scope">
             <span class="text-gray-500 font-medium">{{ scope.row.time.split('T')[0] }}</span>
           </template>
@@ -200,8 +218,8 @@ onMounted(() => {
         <el-table-column label="相关人员" min-width="160">
           <template #default="{ row }">
             <div v-if="row.initiator || row.receiver" class="flex flex-col gap-1">
-              <span v-if="row.initiator" class="text-sm">发起: <span class="font-bold text-[#1A3A5C]">{{ maskName(row.initiator) }}</span></span>
-              <span v-if="row.receiver" class="text-sm">接收: <span class="font-bold text-[#1A3A5C]">{{ maskName(row.receiver) }}</span></span>
+              <span v-if="row.initiator" class="text-sm">发起: <span class="font-bold text-[#1A3A5C]">{{ isMasked ? maskName(row.initiator) : row.initiator }}</span></span>
+              <span v-if="row.receiver" class="text-sm">接收: <span class="font-bold text-[#1A3A5C]">{{ isMasked ? maskName(row.receiver) : row.receiver }}</span></span>
             </div>
           </template>
         </el-table-column>
@@ -231,6 +249,22 @@ onMounted(() => {
         <el-table-column prop="crime_type" label="涉嫌罪名" min-width="180" show-overflow-tooltip>
           <template #default="scope">
             <span class="text-gray-600 italic text-sm">{{ scope.row.crime_type }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="severity_level" label="严重程度" width="120" align="center">
+          <template #default="{ row }">
+            <span
+              v-if="row.severity_level"
+              class="px-2 py-0.5 rounded-full text-[10px] font-bold border"
+              :style="{
+                background: row.severity_level === '刑事犯罪' ? '#FEF2F2' : row.severity_level === '民事侵权' ? '#FFFBEB' : '#F0FDF4',
+                color: row.severity_level === '刑事犯罪' ? '#DC2626' : row.severity_level === '民事侵权' ? '#D97706' : '#16A34A',
+                borderColor: row.severity_level === '刑事犯罪' ? '#FECACA' : row.severity_level === '民事侵权' ? '#FDE68A' : '#BBF7D0'
+              }"
+            >
+              {{ row.severity_level }}
+            </span>
+            <span v-else class="text-gray-400">-</span>
           </template>
         </el-table-column>
       </el-table>

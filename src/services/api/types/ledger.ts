@@ -8,6 +8,7 @@ export interface EvidenceListItem {
   hit_keywords: string[];
   score: number;
   crime_type: string;
+  severity_level?: string;
 }
 
 export interface GetEvidenceListResponse {

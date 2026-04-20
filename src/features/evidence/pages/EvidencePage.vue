@@ -367,16 +367,25 @@ function syncToLedger() {
 
 // 生成分析报告
 async function generateReport() {
-  const loading = ElLoading.service({ fullscreen: true, text: '正在生成报告...' });
+  const loading = ElLoading.service({ fullscreen: true, text: '正在生成初步分析报告...' });
   
   try {
-    const caseId = Number(selectedCaseId.value || (caseOptions.value.length > 0 ? caseOptions.value[0].value : 1));
-    const res = await post<any>('/report/generate', null, { params: { case_id: caseId } });
-    const data = res?.data || res;
+    const caseId = selectedCaseId.value || (caseOptions.value.length > 0 ? caseOptions.value[0].value : null);
+    if (!caseId) {
+      ElMessage.warning("请先选择案件");
+      return;
+    }
     
-    if (data?.success || data?.report_id) {
+    // 调用接口生成报告
+    const res = await post<any>('/report/generate', null, { params: { case_id: Number(caseId) } });
+    
+    // 兼容不同的返回结构
+    const data = (res as any).data || res;
+    
+    if (data && (data.success || data.report_id)) {
       ElMessage.success(data.message || "报告生成成功！");
-      reportStore.setReport(caseId, data.download_url, data.report_id);
+      // 保存到 store 供后续下载
+      reportStore.setReport(caseId.toString(), data.download_url, data.report_id);
     } else {
       throw new Error(data?.message || '报告生成失败');
     }
