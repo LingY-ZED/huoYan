@@ -1,5 +1,6 @@
 import { get, post, put, del } from "../client";
-import type { CasesRepository, ListCasesRequest, GetCaseDetailResponse, ListCasesResponse, CreateCaseRequest, CreateCaseResponse, UpdateCaseRequest, UpdateCaseResponse } from "../types/cases";
+import type { ApiResult } from "@/entities/common";
+import type { CasesRepository, ListCasesRequest, GetCaseDetailResponse, ListCasesResponse, CreateCaseRequest, CreateCaseResponse, UpdateCaseRequest, UpdateCaseResponse, InferCaseFieldsResponse } from "../types/cases";
 
 export function createApiCasesRepository(): CasesRepository {
   return {
@@ -17,6 +18,9 @@ export function createApiCasesRepository(): CasesRepository {
     },
     async updateCase(caseId: string, req: UpdateCaseRequest): Promise<UpdateCaseResponse> {
       return put<UpdateCaseResponse>(`/cases/${caseId}`, req);
+    },
+    async inferFields(caseId: string): Promise<InferCaseFieldsResponse> {
+      return post<InferCaseFieldsResponse>(`/cases/${caseId}/infer-fields`);
     },
     async deleteCase(caseId: string): Promise<ApiResult<null>> {
       return del<null>(`/cases/${caseId}`);

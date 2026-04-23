@@ -335,7 +335,12 @@ async function loadUpstreamGraph(caseId: string | number) {
             name: cleanName,
             fullName: full,
             category: (() => {
-              const r = (n.role || cleanName || '').toString();
+              // 优先使用后端返回的布尔标志位
+              if (n.is_core) return '核心嫌疑人';
+              if (n.is_upstream) return '上游供应商';
+              if (n.is_downstream) return '下游买家';
+              // 兼容 role 字符串字段
+              const r = (n.role || '').toString();
               if (r.includes('核心') || r.includes('嫌疑')) return '核心嫌疑人';
               if (r.includes('上游') || r.includes('供货') || r.includes('供应')) return '上游供应商';
               if (r.includes('下游') || r.includes('买家') || r.includes('销售') || r.includes('购货')) return '下游买家';
@@ -402,7 +407,7 @@ async function loadUpstreamGraph(caseId: string | number) {
         label: { show: true, formatter: l.name }
       }));
 
-      const centerNode = nodes.find((n: any) => (n.role || '').includes('核心')) || nodes[0];
+      const centerNode = nodes.find((n: any) => n.is_core || (n.role || '').includes('核心')) || nodes[0];
       
       if (!centerNode) {
         upstreamData.value = null;
@@ -413,17 +418,32 @@ async function loadUpstreamGraph(caseId: string | number) {
         caseId: caseId.toString(),
         center: centerNode,
         suppliers: nodes.filter((n: any) => {
-          const r = (n.role || n.name || '').toLowerCase();
-          return (r.includes('上游') || r.includes('供货') || r.includes('供应')) && n !== centerNode;
+          // 排除中心节点和核心嫌疑人
+          if (n === centerNode || n.is_core) return false;
+          // 优先使用布尔标志位判断
+          if (n.is_upstream === true) return true;
+          // 兼容 role 字符串字段
+          const r = (n.role || '').toString();
+          return r.includes('上游') || r.includes('供货') || r.includes('供应');
         }),
         buyers: nodes.filter((n: any) => {
-          const r = (n.role || n.name || '').toLowerCase();
-          return (r.includes('下游') || r.includes('买家') || r.includes('销售')) && n !== centerNode;
+          // 排除中心节点和核心嫌疑人
+          if (n === centerNode || n.is_core) return false;
+          // 优先使用布尔标志位判断
+          if (n.is_downstream === true) return true;
+          // 兼容 role 字符串字段
+          const r = (n.role || '').toString();
+          return r.includes('下游') || r.includes('买家') || r.includes('销售') || r.includes('购货');
         }),
         middle: nodes.filter((n: any) => {
-          const r = (n.role || n.name || '').toLowerCase();
-          const isKnown = r.includes('核心') || r.includes('上游') || r.includes('供货') || r.includes('供应') || r.includes('下游') || r.includes('买家') || r.includes('销售');
-          return !isKnown && n !== centerNode;
+          // 排除中心节点
+          if (n === centerNode) return false;
+          // 如果有明确的上游/下游布尔标志位，不放入 middle
+          if (n.is_upstream === true || n.is_downstream === true) return false;
+          // 兼容 role 字符串字段：已知上游/下游角色不放入 middle
+          const r = (n.role || '').toString();
+          const isUpstreamOrDownstream = r.includes('上游') || r.includes('供货') || r.includes('供应') || r.includes('下游') || r.includes('买家') || r.includes('销售') || r.includes('购货');
+          return !isUpstreamOrDownstream;
         }),
         links: links
       };
