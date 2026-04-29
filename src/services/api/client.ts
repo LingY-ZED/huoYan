@@ -2,7 +2,7 @@ import axios, { type AxiosInstance, type AxiosRequestConfig, type InternalAxiosR
 import { ApiError, NetworkError, ValidationError, TableFormatError } from "./errors";
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "/api";
-const TIMEOUT = 15000;
+const TIMEOUT = 60000;
 
 /**
  * 从 localStorage 获取 Basic Auth 凭据，构建 Authorization 头
